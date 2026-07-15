@@ -22,6 +22,7 @@ Thumbs.db
 .idea/
 
 data/
+archive/            # locally-downloaded external datasets (e.g. the Reddit-news/DJIA CSVs)
 *.parquet
 *.csv
 *.pt

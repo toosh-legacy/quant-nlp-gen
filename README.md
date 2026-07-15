@@ -343,6 +343,13 @@ brilliant because it quietly cheated. Every guard below exists to prevent that:
 **No result here approaches 0.80, and that's the point.** Numbers like that on next-day/next-week
 direction come from leakage or overfitting — the exact things these guards rule out.
 
+**Data we evaluated and skipped.** Being honest about data is part of this too. We assessed the Kaggle
+"Daily News for Stock Market Prediction" set (r/worldnews headlines → DJIA up/down) and the VIX index.
+Both were left out: the news set is another near-random *direction* task (majority baseline already 53.5%;
+world news is weak signal for the DJIA), and VIX added no cross-sectional signal (see the
+[VIX ablation](#did-vix-help-an-honest-ablation)). What *did* help — bigger universe, log target,
+cross-sectional and range-based features — is what's in the repo.
+
 ---
 
 ## Quickstart
