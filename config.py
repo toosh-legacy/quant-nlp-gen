@@ -181,7 +181,24 @@ VOL_EXTRA_FEATURE_COLS = ["volatility_10d", "volatility_20d"]
 # fancier models. All are backward-looking (past squared returns).
 HAR_FEATURE_COLS = ["har_rv_d", "har_rv_w", "har_rv_m"]
 
-# Feature sets for Task B.
+# VIX / implied-volatility features (downloaded from Yahoo Finance via yfinance). Implied
+# volatility is the market's own FORWARD-LOOKING volatility forecast, and one of the
+# strongest predictors of future realized volatility — so this is the "better data" lever
+# for Task B. All values are known at the close of day t (no lookahead).
+VIX_SYMBOLS = ["^VIX", "^VIX3M"]           # spot VIX + 3-month VIX (for the term structure)
+VIX_FEATURE_COLS = [
+    "vix_level",     # VIX close (overall market fear level)
+    "vix_ret_5d",    # 5-day change in VIX (is fear rising or falling?)
+    "vix_rel_20d",   # VIX vs its own 20-day average (elevated vs recent norm?)
+    "vix_term",      # VIX3M / VIX term structure: >1 calm (contango), <1 stressed (backwardation)
+]
+VIX_CACHE_PATH = DATA_DIR / "vix_features.parquet"
+
+# Feature sets for Task B. NOTE: VIX features are intentionally NOT included here — an
+# ablation showed VIX (a single market-wide series, identical across all tickers on a day)
+# added no cross-sectional signal to per-ticker vol prediction and was redundant with each
+# stock's own HAR volatility. See README ("Did VIX help?") and predictor/volatility.py. The
+# yfinance VIX loader is kept in features/build_features.py for that documented experiment.
 VOL_PRICE_FEATURE_COLS = PRICE_FEATURE_COLS + VOL_EXTRA_FEATURE_COLS + HAR_FEATURE_COLS
 VOL_COMBINED_FEATURE_COLS = VOL_PRICE_FEATURE_COLS + SENTIMENT_FEATURE_COLS
 

@@ -71,6 +71,45 @@ def load_ticker_sectors() -> dict[str, str]:
     return mapping
 
 
+def load_vix_features(force_download: bool = False) -> pd.DataFrame:
+    """Return a per-date table of VIX / implied-volatility features, downloading once from
+    Yahoo Finance (via yfinance) and caching to parquet.
+
+    Every column is known at the close of day t — the VIX level, its recent momentum and
+    relative level, and the VIX3M/VIX term structure — so using them to predict future
+    realized volatility introduces no lookahead. Implied vol is the market's own forward
+    volatility forecast, which is why it is such a strong predictor.
+    """
+    if config.VIX_CACHE_PATH.exists() and not force_download:
+        return pd.read_parquet(config.VIX_CACHE_PATH)
+
+    import yfinance as yf
+
+    start = pd.Timestamp(config.TRAIN_START) - pd.Timedelta(days=220)
+    end = pd.Timestamp(config.TEST_END) + pd.Timedelta(days=150)
+    print(f"Downloading VIX data {config.VIX_SYMBOLS} {start.date()}..{end.date()} ...")
+    raw = yf.download(config.VIX_SYMBOLS, start=start, end=end, progress=False,
+                      auto_adjust=True)["Close"]
+    if raw.isna().all().any() or raw.empty:
+        raise RuntimeError(
+            "VIX download failed or returned empty (Yahoo may be rate-limiting — retry in a "
+            "minute). Delete any partial cache at " + str(config.VIX_CACHE_PATH))
+    raw = raw.rename(columns={"^VIX": "vix", "^VIX3M": "vix3m"}).sort_index()
+
+    out = pd.DataFrame(index=raw.index)
+    out["vix_level"] = raw["vix"]
+    out["vix_ret_5d"] = raw["vix"].pct_change(5)
+    out["vix_rel_20d"] = raw["vix"] / raw["vix"].rolling(20).mean()
+    out["vix_term"] = raw["vix3m"] / raw["vix"]
+    out = out.reset_index()
+    out.columns = ["date", *config.VIX_FEATURE_COLS]
+    out["date"] = pd.to_datetime(out["date"])
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    out.to_parquet(config.VIX_CACHE_PATH, index=False)
+    print(f"Cached VIX features -> {config.VIX_CACHE_PATH} ({len(out)} rows)")
+    return out
+
+
 def load_prices(ticker: str) -> pd.DataFrame:
     """Load one ticker's raw daily OHLCV, ascending by date.
 
@@ -384,6 +423,9 @@ def build_combined(tickers: list[str], sent_df: pd.DataFrame | None) -> pd.DataF
         df.groupby("ticker")["sent_mean"]
         .transform(lambda s: s.rolling(config.SENT_TRAILING_WINDOW, min_periods=1).mean())
     )
+
+    # (VIX features are NOT merged in by default — the ablation found they didn't help this
+    # per-ticker task; see load_vix_features + README. Left out to keep the pipeline offline.)
 
     # Split of the feature day, and split of each horizon's outcome day (for the embargo).
     df["split"] = assign_split(df["date"])

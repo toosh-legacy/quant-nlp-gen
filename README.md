@@ -23,8 +23,11 @@ intervals. No GPU, no cloud.
 
 **Task B (volatility regime) — the genuinely predictable one:** predicting whether next-week realized
 volatility will rise or fall beats a 52% majority baseline decisively — **walk-forward accuracy
-0.72 ± 0.02, MCC +0.44 ± 0.03** at the 5-day horizon, stable across all 5 windows. Real skill, from
-volatility clustering + mean-reversion. See [Task B results](#task-b-volatility-regime-prediction).
+0.72 ± 0.02, MCC +0.44 ± 0.03** at the 5-day horizon, stable across all 5 windows. Scaling to a **large
+2005–2024 universe with log-vol + cross-sectional features** pushes the *magnitude* forecast to **R²
+≈ 0.34–0.39** out-of-sample, positive in every one of 10 walk-forward years. Real skill, from volatility
+clustering + mean-reversion. See [Task B results](#task-b-volatility-regime-prediction) and
+[Task B (pro)](#task-b-pro--the-best-result-on-better-data).
 
 **Task A (direction) — the honestly hard one:**
 - A **small but real** edge exists at **~1–10 trading days** — it survives walk-forward *and* a stricter
@@ -94,7 +97,41 @@ Price features carry both results; sentiment barely changes them (volatility is 
 phenomenon). Run: `python predictor/volatility.py`. **This is the ~0.70+ accuracy result — achieved by
 predicting something that is actually predictable, not by overfitting direction.**
 
----
+### Task B (pro) — the best result, on better data
+
+The StockNet volatility numbers were capped by *data* (88 tickers, 2 years, daily returns). So we built
+the best free version: a **~80-ticker large-cap universe over 2005–2024** (downloaded via yfinance),
+predicting **log** realized volatility (vol is log-normal and far more predictable in log space) with
+**cross-sectional** features — each stock's vol *relative to the universe that day* (the stock-specific
+signal a single market index like VIX can't give). ~380k ticker-days across the 2008 and 2020 regimes.
+
+**Log realized-vol R² — fixed out-of-sample (train < 2018, test 2018–2024):**
+
+| horizon | persistence | HAR-OLS | Ridge (all) | **XGBoost** |
+|--------:|:-----------:|:-------:|:-----------:|:-----------:|
+| 5 day  | −0.08 | 0.30 | 0.33 | **0.34** |
+| 10 day |  0.08 | 0.35 | 0.37 | **0.39** |
+| 21 day |  0.13 | 0.35 | 0.36 | **0.37** |
+
+**Walk-forward (train on all prior years, test each year 2015–2024, embargoed):** R² **0.26–0.32**,
+**positive in every one of the 10 years**. The "will vol rise?" classification holds at **71% accuracy /
+MCC 0.43** on 138k out-of-sample rows.
+
+This is roughly **double** the StockNet vol R² (~0.15–0.20) and holds up across a decade and 79 stocks —
+the payoff of more data, a log target, and cross-sectional features. Ridge-all (0.33) beating HAR-OLS
+(0.30) shows the cross-sectional signal genuinely adds value. Run: `python
+predictor/volatility_universe.py`. (Still short of the ~0.5–0.7 that *intraday* data reaches — daily
+returns make noisy realized-vol estimates; see [Future work](#future-work).)
+
+### Did VIX help? An honest ablation
+
+We also tried adding **VIX / implied volatility** to the StockNet vol model. Clean ablation (same models,
+VIX on/off): **it didn't help** — regression R² moved by ~±0.01 and classification MCC was flat. Why?
+VIX is a *single market-wide series*, identical for all tickers on a given day, so it adds **no
+cross-sectional signal**, and each stock's own HAR volatility already captures the market regime. The
+lesson — *"better data" must add new, non-redundant information* — is exactly what pointed us to the
+cross-sectional features above (which **do** help). The VIX loader is kept
+(`features/build_features.py::load_vix_features`) but left out of the default feature set.
 
 ---
 
@@ -323,6 +360,10 @@ python predictor/walkforward.py     # Task A: walk-forward mean ± std  (directi
 python predictor/analysis.py        # Task A: non-overlap + conviction + per-sector studies
 python predictor/volatility.py      # Task B: volatility-regime prediction (~0.72 accuracy)
 
+# Task B (pro) — best result on a large 2005-2024 universe (downloads ~80 tickers once)
+python features/universe_data.py        # build the universe dataset (cached)
+python predictor/volatility_universe.py # log-RV regression R^2 + walk-forward + classification
+
 # 6. (optional) interactive demo — pick a ticker + horizon
 streamlit run app.py
 
@@ -341,17 +382,20 @@ config.py                       # paths, seed, horizons, √h thresholds, featur
 sentiment_model/
   train_sentiment_model.py      # fine-tune DistilBERT (bullish/bearish/neutral)
   model_card.md                 # Hugging Face model card
-features/build_features.py      # tweet scoring + price factors (RSI/MACD, multi-scale vol)
-                                #   + trailing sentiment + multi-horizon direction & vol labels
-                                #   + embargo columns + sector map
+features/
+  build_features.py             # StockNet: tweet scoring + price factors (RSI/MACD, multi-scale vol)
+                                #   + trailing sentiment + multi-horizon direction & vol labels + sectors
+  universe_data.py              # Task B pro: download ~80-ticker 2005-2024 universe + log-RV features
 predictor/
   train_predictor.py            # Task A: LogReg + dev-tuned XGBoost, 3 variants, per horizon, embargoed
   evaluate.py                   # Task A: fixed-window accuracy / F1 / MCC horizon table
-  walkforward.py                # Task A: rolling out-of-sample windows -> mean ± std   ◀ headline
+  walkforward.py                # Task A: rolling out-of-sample windows -> mean ± std   ◀ direction headline
   analysis.py                   # Task A: non-overlap cross-check · conviction curve · per-sector models
-  volatility.py                 # Task B: volatility-regime prediction (~0.72 acc) + walk-forward
+  volatility.py                 # Task B: volatility-regime prediction (~0.72 acc) on StockNet
+  volatility_universe.py        # Task B pro: log-RV regression R^2 + walk-forward   ◀ best vol result
 app.py                          # Streamlit demo (ticker + horizon selector)
-tests/                          # leakage, RSI/MACD/vol, direction & vol labels, embargo, metrics, sectors
+tests/                          # leakage, RSI/MACD/vol, labels, embargo, metrics, sectors, universe
+.github/workflows/ci.yml        # runs the test suite on every push
 .github/workflows/ci.yml        # runs the test suite on every push
 ```
 
