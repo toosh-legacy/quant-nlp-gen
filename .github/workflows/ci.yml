@@ -1,0 +1,33 @@
+name: CI
+
+# Runs the test suite on every push and PR. This project isn't a deployed service, so
+# there is no build/deploy step — the point of CI here is simply that the correctness
+# guardrails (no-lookahead feature tests, metric-computation tests) run automatically so
+# the pipeline can't be quietly broken.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        # We deliberately install only the lightweight deps the CI-runnable tests need.
+        # The full pipeline also uses torch/transformers, but those tests (sentiment model,
+        # end-to-end feature build) require downloaded data / a trained model and are
+        # self-skipping in CI. Keeping CI light means it stays fast and reliable.
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy pandas scikit-learn xgboost pytest
+
+      - name: Run tests
+        run: pytest -q
