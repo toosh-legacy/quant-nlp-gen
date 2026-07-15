@@ -221,7 +221,9 @@ def _roll_sentiment_onto_trading_days(
     """
     trading_days = price_df["date"].sort_values().to_numpy()
     if len(sent_df) == 0:
-        return pd.DataFrame(columns=["date", *config.SENTIMENT_FEATURE_COLS])
+        empty = pd.DataFrame(columns=["date", *config.SENTIMENT_FEATURE_COLS])
+        empty["date"] = pd.to_datetime(empty["date"])
+        return empty
 
     s = sent_df.sort_values("date").copy()
     # searchsorted with side='left' finds the first trading day >= the tweet date.
@@ -231,20 +233,24 @@ def _roll_sentiment_onto_trading_days(
     s["trading_day"] = trading_days[idx[valid]]
 
     # A trading day may collect several calendar dates (e.g. Sat+Sun+Mon -> Monday).
-    # Aggregate them, weighting the mean sentiment by tweet count.
-    def _agg(g: pd.DataFrame) -> pd.Series:
-        w = g["sent_tweet_count"].to_numpy()
-        wsum = w.sum()
-        return pd.Series(
-            {
-                "sent_mean": float(np.average(g["sent_mean"], weights=w)) if wsum else 0.0,
-                "sent_tweet_count": int(wsum),
-                "sent_bull_ratio": float(np.average(g["sent_bull_ratio"], weights=w)) if wsum else 0.5,
-            }
-        )
-
-    rolled = s.groupby("trading_day", group_keys=False).apply(_agg).reset_index()
-    return rolled.rename(columns={"trading_day": "date"})
+    # Aggregate them with a tweet-count-weighted mean, done via explicit weighted sums so
+    # the result doesn't depend on pandas' version-specific groupby.apply behavior.
+    s["_wm"] = s["sent_mean"] * s["sent_tweet_count"]
+    s["_wb"] = s["sent_bull_ratio"] * s["sent_tweet_count"]
+    grp = s.groupby("trading_day", as_index=False).agg(
+        _wm_sum=("_wm", "sum"),
+        _wb_sum=("_wb", "sum"),
+        sent_tweet_count=("sent_tweet_count", "sum"),
+    )
+    tot = grp["sent_tweet_count"].replace(0, np.nan)
+    grp["sent_mean"] = (grp["_wm_sum"] / tot).fillna(0.0)
+    grp["sent_bull_ratio"] = (grp["_wb_sum"] / tot).fillna(0.5)
+    rolled = grp.rename(columns={"trading_day": "date"})[
+        ["date", *config.SENTIMENT_FEATURE_COLS]
+    ]
+    # Guarantee the merge key dtype matches the price frame's datetime64 'date'.
+    rolled["date"] = pd.to_datetime(rolled["date"])
+    return rolled
 
 
 def assign_split(dates: pd.Series) -> pd.Series:
@@ -284,9 +290,16 @@ def build_combined(tickers: list[str], sent_df: pd.DataFrame | None) -> pd.DataF
         else:
             df[col] = fill
     # Log-scale the raw count so a day with 200 tweets doesn't dwarf a day with 5.
-    df["sent_tweet_count"] = np.log1p(df["sent_tweet_count"])
+    df["sent_tweet_count"] = np.log1p(df["sent_tweet_count"].astype(float))
 
     df["split"] = assign_split(df["date"])
+
+    # A prior-day volume of 0 makes volume_change divide by zero -> +/-inf. Treat those
+    # (and any other non-finite feature) as missing so the dropna below removes the row
+    # rather than feeding an infinity into the scaler/model.
+    df[config.PRICE_FEATURE_COLS] = df[config.PRICE_FEATURE_COLS].replace(
+        [np.inf, -np.inf], np.nan
+    )
 
     # Keep only well-posed rows: inside the split window, with a defined label and defined
     # price features.
