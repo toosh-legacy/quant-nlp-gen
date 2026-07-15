@@ -48,6 +48,7 @@ volatility clustering + mean-reversion. See [Task B results](#task-b-volatility-
 - [Quickstart](#quickstart) · [Repo layout](#repo-layout)
 - [Limitations](#limitations) · [Future work](#future-work)
 - [The sentiment model](#the-sentiment-model) · [Citation & license](#citation--license)
+- **New to the metrics?** [`docs/METRICS.md`](docs/METRICS.md) explains accuracy, F1, **MCC**, Brier, walk-forward mean ± std, embargo, and more — in plain language, with this project's numbers as examples.
 
 ---
 
