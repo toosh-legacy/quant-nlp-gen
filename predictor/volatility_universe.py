@@ -51,13 +51,39 @@ def _fit_ridge(Xtr, ytr):
     return sc, m
 
 
-def _fit_xgb(Xtr, ytr):
+XGB_FIXED = dict(subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0,
+                 random_state=config.RANDOM_SEED, n_jobs=-1, tree_method="hist")
+XGB_DEFAULT = dict(n_estimators=500, max_depth=4, learning_rate=0.05)
+
+
+def _fit_xgb(Xtr, ytr, params: dict | None = None):
     from xgboost import XGBRegressor
-    m = XGBRegressor(n_estimators=500, max_depth=4, learning_rate=0.05, subsample=0.8,
-                     colsample_bytree=0.8, reg_lambda=1.0, random_state=config.RANDOM_SEED,
-                     n_jobs=-1, tree_method="hist")
+    m = XGBRegressor(**XGB_FIXED, **(params or XGB_DEFAULT))
     m.fit(Xtr, ytr)
     return m
+
+
+def tune_xgb(df: pd.DataFrame, h: int) -> dict:
+    """Pick XGBoost params for horizon h by validating on 2016-2017 (a held-out time slice of
+    the pre-2018 training data), then those params are reused out-of-sample. Tune on time,
+    never on the test period."""
+    y = univ_fwd_col(h)
+    sub = df[df[y].notna()]
+    fit = _embargoed_train(sub, h, pd.Timestamp("2016-01-01"))
+    val = sub[(sub["date"] >= "2016-01-01") & (sub["date"] < "2018-01-01")]
+    Xf, yf = fit[UNIV_FEATURES].to_numpy(float), fit[y].to_numpy()
+    Xv, yv = val[UNIV_FEATURES].to_numpy(float), val[y].to_numpy()
+    grid = [
+        {"n_estimators": n, "max_depth": d, "learning_rate": lr}
+        for n in (500, 900) for d in (4, 6) for lr in (0.03, 0.05)
+    ]
+    best, best_r2 = XGB_DEFAULT, -1e9
+    for p in grid:
+        r2 = _r2(yv, _fit_xgb(Xf, yf, p).predict(Xv))
+        if r2 > best_r2:
+            best_r2, best = r2, p
+    print(f"  h={h:>2}: tuned {best} (val R^2={best_r2:.3f})")
+    return best
 
 
 def _embargoed_train(df: pd.DataFrame, h: int, cutoff: pd.Timestamp) -> pd.DataFrame:
@@ -66,7 +92,7 @@ def _embargoed_train(df: pd.DataFrame, h: int, cutoff: pd.Timestamp) -> pd.DataF
     return df[(df["date"] < cutoff) & (df[ld].notna()) & (df[ld] < cutoff)]
 
 
-def fixed_split_table(df: pd.DataFrame) -> pd.DataFrame:
+def fixed_split_table(df: pd.DataFrame, params_by_h: dict[int, dict]) -> pd.DataFrame:
     cutoff = pd.Timestamp(FIXED_TEST_START)
     rows = []
     for h in UNIV_HORIZONS:
@@ -86,14 +112,14 @@ def fixed_split_table(df: pd.DataFrame) -> pd.DataFrame:
         sc2, ridge = _fit_ridge(Xtr, ytr)
         rows.append({"horizon": h, "model": "ridge(all)", "r2": _r2(yte, ridge.predict(sc2.transform(Xte)))})
 
-        xgb = _fit_xgb(Xtr, ytr)
-        rows.append({"horizon": h, "model": "xgboost", "r2": _r2(yte, xgb.predict(Xte))})
+        xgb = _fit_xgb(Xtr, ytr, params_by_h[h])
+        rows.append({"horizon": h, "model": "xgboost(tuned)", "r2": _r2(yte, xgb.predict(Xte))})
         print(f"  h={h:>2}: fixed split done (train={len(train)}, test={len(test)})")
     return pd.DataFrame(rows)
 
 
-def walk_forward(df: pd.DataFrame) -> pd.DataFrame:
-    """Per-year walk-forward R^2 (XGBoost, all features): train on all prior years, embargoed."""
+def walk_forward(df: pd.DataFrame, params_by_h: dict[int, dict]) -> pd.DataFrame:
+    """Per-year walk-forward R^2 (tuned XGBoost, all features): train on all prior years, embargoed."""
     per_fold = []
     for h in UNIV_HORIZONS:
         y = univ_fwd_col(h)
@@ -105,7 +131,7 @@ def walk_forward(df: pd.DataFrame) -> pd.DataFrame:
             test = sub[(sub["date"] >= cutoff) & (sub["date"] < nxt)]
             if len(train) < 5000 or len(test) < 500:
                 continue
-            xgb = _fit_xgb(train[UNIV_FEATURES].to_numpy(float), train[y].to_numpy())
+            xgb = _fit_xgb(train[UNIV_FEATURES].to_numpy(float), train[y].to_numpy(), params_by_h[h])
             r2 = _r2(test[y].to_numpy(), xgb.predict(test[UNIV_FEATURES].to_numpy(float)))
             per_fold.append({"horizon": h, "year": yr, "n_test": len(test), "r2": r2})
     pf = pd.DataFrame(per_fold)
@@ -155,14 +181,17 @@ def main() -> None:
     print(f"Universe features: {len(df)} rows, {df['ticker'].nunique()} tickers, "
           f"{df['date'].min().date()}..{df['date'].max().date()}\n")
 
-    print("=== Regression: log realized-vol R^2, fixed OOS split (train<2018, test 2018-24) ===")
-    ft = fixed_split_table(df)
-    piv = ft.pivot(index="horizon", columns="model", values="r2")[
-        ["persistence", "HAR-OLS", "ridge(all)", "xgboost"]].reset_index()
-    print(_fmt(piv, ["persistence", "HAR-OLS", "ridge(all)", "xgboost"]))
+    print("=== Tuning XGBoost per horizon (validate on 2016-2017) ===")
+    params_by_h = {h: tune_xgb(df, h) for h in UNIV_HORIZONS}
 
-    print("\n=== Regression walk-forward (XGBoost) — R^2 per-year, mean +/- std ===")
-    wf, _ = walk_forward(df)
+    print("\n=== Regression: log realized-vol R^2, fixed OOS split (train<2018, test 2018-24) ===")
+    ft = fixed_split_table(df, params_by_h)
+    piv = ft.pivot(index="horizon", columns="model", values="r2")[
+        ["persistence", "HAR-OLS", "ridge(all)", "xgboost(tuned)"]].reset_index()
+    print(_fmt(piv, ["persistence", "HAR-OLS", "ridge(all)", "xgboost(tuned)"]))
+
+    print("\n=== Regression walk-forward (tuned XGBoost) — R^2 per-year, mean +/- std ===")
+    wf, _ = walk_forward(df, params_by_h)
     for _, r in wf.iterrows():
         print(f"  h={int(r['horizon']):>2}  ({int(r['n_folds'])} yearly folds):  "
               f"R^2 {r['r2_mean']:.3f} +/- {r['r2_std']:.3f}  "

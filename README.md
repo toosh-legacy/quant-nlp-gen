@@ -24,8 +24,8 @@ intervals. No GPU, no cloud.
 **Task B (volatility regime) — the genuinely predictable one:** predicting whether next-week realized
 volatility will rise or fall beats a 52% majority baseline decisively — **walk-forward accuracy
 0.72 ± 0.02, MCC +0.44 ± 0.03** at the 5-day horizon, stable across all 5 windows. Scaling to a **large
-2005–2024 universe with log-vol + cross-sectional features** pushes the *magnitude* forecast to **R²
-≈ 0.34–0.39** out-of-sample, positive in every one of 10 walk-forward years. Real skill, from volatility
+2005–2024 universe with log-vol, cross-sectional, and range-based (Garman-Klass) features** pushes the
+*magnitude* forecast to **R² ≈ 0.37–0.42** out-of-sample, positive in every one of 10 walk-forward years. Real skill, from volatility
 clustering + mean-reversion. See [Task B results](#task-b-volatility-regime-prediction) and
 [Task B (pro)](#task-b-pro--the-best-result-on-better-data).
 
@@ -101,27 +101,35 @@ predicting something that is actually predictable, not by overfitting direction.
 
 The StockNet volatility numbers were capped by *data* (88 tickers, 2 years, daily returns). So we built
 the best free version: a **~80-ticker large-cap universe over 2005–2024** (downloaded via yfinance),
-predicting **log** realized volatility (vol is log-normal and far more predictable in log space) with
-**cross-sectional** features — each stock's vol *relative to the universe that day* (the stock-specific
-signal a single market index like VIX can't give). ~380k ticker-days across the 2008 and 2020 regimes.
+predicting **log** realized volatility (vol is log-normal and far more predictable in log space), with
+two feature ideas that genuinely move the needle:
+- **Cross-sectional** — each stock's vol *relative to the universe that day* (the stock-specific signal a
+  single market index like VIX can't give).
+- **Range-based estimators** — **Parkinson** and **Garman-Klass** volatility, computed from the daily
+  **High/Low/Open/Close range**. These extract intraday-movement information from *daily* bars and are
+  several times more statistically efficient than close-to-close vol — the closest thing to intraday data
+  without needing it.
+
+~380k ticker-days across the 2008 and 2020 regimes; XGBoost tuned on a 2016–2017 validation slice.
 
 **Log realized-vol R² — fixed out-of-sample (train < 2018, test 2018–2024):**
 
-| horizon | persistence | HAR-OLS | Ridge (all) | **XGBoost** |
-|--------:|:-----------:|:-------:|:-----------:|:-----------:|
-| 5 day  | −0.08 | 0.30 | 0.33 | **0.34** |
-| 10 day |  0.08 | 0.35 | 0.37 | **0.39** |
-| 21 day |  0.13 | 0.35 | 0.36 | **0.37** |
+| horizon | persistence | HAR-OLS | Ridge (all) | **XGBoost (tuned)** |
+|--------:|:-----------:|:-------:|:-----------:|:-------------------:|
+| 5 day  | −0.08 | 0.30 | 0.36 | **0.37** |
+| 10 day |  0.08 | 0.35 | 0.41 | **0.42** |
+| 21 day |  0.13 | 0.35 | 0.41 | **0.41** |
 
-**Walk-forward (train on all prior years, test each year 2015–2024, embargoed):** R² **0.26–0.32**,
-**positive in every one of the 10 years**. The "will vol rise?" classification holds at **71% accuracy /
-MCC 0.43** on 138k out-of-sample rows.
+**Walk-forward (train on all prior years, test each year 2015–2024, embargoed):** R² **0.29 / 0.34 /
+0.36** at 5/10/21d, **positive in every one of the 10 years**. The "will vol rise?" classification reaches
+**72% accuracy / MCC 0.45** on 138k out-of-sample rows.
 
-This is roughly **double** the StockNet vol R² (~0.15–0.20) and holds up across a decade and 79 stocks —
-the payoff of more data, a log target, and cross-sectional features. Ridge-all (0.33) beating HAR-OLS
-(0.30) shows the cross-sectional signal genuinely adds value. Run: `python
-predictor/volatility_universe.py`. (Still short of the ~0.5–0.7 that *intraday* data reaches — daily
-returns make noisy realized-vol estimates; see [Future work](#future-work).)
+That's roughly **double** the StockNet vol R² (~0.15–0.20) and holds up across a decade and 79 stocks —
+the payoff of more data, a log target, and better features. Two tells that the features are *real*
+signal, not noise: **Ridge-all (0.36) beats HAR-OLS (0.30)**, and the biggest single jump came from
+adding the **range-based estimators** (Ridge 0.33 → 0.36 at 5d) — the exact opposite of the VIX result
+below. Run: `python predictor/volatility_universe.py`. (Still short of the ~0.5–0.7 that true *intraday*
+5-minute data reaches; see [Future work](#future-work).)
 
 ### Did VIX help? An honest ablation
 

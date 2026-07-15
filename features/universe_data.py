@@ -59,7 +59,11 @@ UNIV_HORIZONS = [5, 10, 21]
 
 # The model feature columns (all causal).
 UNIV_FEATURES = [
-    "log_rv_d", "log_rv_w", "log_rv_m", "log_rv_q",   # multi-scale HAR realized vol (log)
+    "log_rv_d", "log_rv_w", "log_rv_m", "log_rv_q",   # multi-scale HAR close-to-close vol (log)
+    # Range-based volatility (Parkinson, Garman-Klass): use the daily HIGH/LOW/OPEN/CLOSE range,
+    # so they capture intraday movement and are far more efficient (less noisy) than
+    # close-to-close vol. This is the "intraday info from daily data" lever.
+    "log_pk_d", "log_gk_d", "log_gk_w", "log_gk_m",
     "ret_5", "ret_21",                                 # momentum
     "log_semivol_21",                                  # downside/leverage-effect vol
     "turnover_z",                                       # volume z-score
@@ -88,11 +92,11 @@ def download_universe(force: bool = False) -> pd.DataFrame:
                        auto_adjust=True, progress=False)
     if data.empty:
         raise RuntimeError("Universe download failed / empty (Yahoo may be rate-limiting — retry).")
-    close = data["Close"].stack().rename("close")
-    volume = data["Volume"].stack().rename("volume")
-    long = pd.concat([close, volume], axis=1).reset_index()
-    long.columns = ["date", "ticker", "close", "volume"]
-    long = long.dropna(subset=["close"]).sort_values(["ticker", "date"]).reset_index(drop=True)
+    parts = {f.lower(): data[f].stack() for f in ["Open", "High", "Low", "Close", "Volume"]}
+    long = pd.concat(parts, axis=1).reset_index()
+    long.columns = ["date", "ticker", "open", "high", "low", "close", "volume"]
+    long = long.dropna(subset=["close", "high", "low", "open"])
+    long = long.sort_values(["ticker", "date"]).reset_index(drop=True)
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     long.to_parquet(RAW_CACHE, index=False)
     print(f"Cached raw universe prices -> {RAW_CACHE} ({len(long)} rows, "
@@ -125,6 +129,21 @@ def build_universe_features(force: bool = False) -> pd.DataFrame:
     df["log_rv_w"] = np.log(np.sqrt(gr("_r2").transform(lambda s: s.rolling(5).mean())) + EPS)
     df["log_rv_m"] = np.log(np.sqrt(gr("_r2").transform(lambda s: s.rolling(21).mean())) + EPS)
     df["log_rv_q"] = np.log(np.sqrt(gr("_r2").transform(lambda s: s.rolling(63).mean())) + EPS)
+
+    # --- Range-based daily volatility (uses the day's High/Low/Open/Close) ---
+    # Parkinson uses the high-low range; Garman-Klass adds the open-close move. Both estimate
+    # a day's variance far more efficiently than a single squared return, so their trailing
+    # averages are cleaner vol predictors than close-to-close RV.
+    hl = np.log(df["high"] / df["low"])
+    co = np.log(df["close"] / df["open"])
+    pk_var = (hl ** 2) / (4.0 * np.log(2.0))                       # Parkinson daily variance
+    gk_var = 0.5 * hl ** 2 - (2.0 * np.log(2.0) - 1.0) * co ** 2   # Garman-Klass daily variance
+    gk_var = gk_var.clip(lower=EPS)                                 # can be slightly negative
+    df["_pk_var"], df["_gk_var"] = pk_var, gk_var
+    df["log_pk_d"] = np.log(np.sqrt(pk_var) + EPS)
+    df["log_gk_d"] = np.log(np.sqrt(gk_var) + EPS)
+    df["log_gk_w"] = np.log(np.sqrt(gr("_gk_var").transform(lambda s: s.rolling(5).mean())) + EPS)
+    df["log_gk_m"] = np.log(np.sqrt(gr("_gk_var").transform(lambda s: s.rolling(21).mean())) + EPS)
 
     # --- Momentum ---
     df["ret_5"] = gr("close").transform(lambda s: s.pct_change(5))
