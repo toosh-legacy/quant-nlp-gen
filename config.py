@@ -216,3 +216,54 @@ def current_vol_col(h: int) -> str:
     balanced in every period, so accuracy is a fair, interpretable metric (unlike a fixed
     threshold, which is imbalanced when the test period is unusually calm or turbulent)."""
     return f"volatility_{h}d"
+
+
+# ===========================================================================
+# Tesla (TSLA) single-stock intraday-enriched deep dive  (the `tesla/` package)
+# ===========================================================================
+# A focused companion to the multi-stock study. Same honest methodology
+# (chronological splits, overlapping-window embargo, baseline-vs-MCC/R^2), but
+# on ONE deliberately-volatile, retail/news-driven name, enriched with genuine
+# intraday data the multi-stock project couldn't afford. The single question:
+# does deeper, single-stock, intraday data buy a stronger or more RELIABLE edge?
+TSLA_TICKER = "TSLA"
+
+# yfinance replaces Alpha Vantage as the price source: no API key, already a
+# dependency. AV is kept only as an OPTIONAL, env-gated path (off by default) so
+# the NEWS_SENTIMENT ambition is documented, not required. Read at the use site:
+#   os.environ.get(ALPHAVANTAGE_ENV)  -> None means "use the free yfinance path".
+ALPHAVANTAGE_ENV = "ALPHAVANTAGE_API_KEY"
+
+# Daily history goes back far enough for a real walk-forward across regimes
+# (incl. the 2020 COVID crash and the 2021-22 meme/rate cycle). Intraday history
+# is capped by Yahoo's free tier — see the per-interval windows below.
+TSLA_DAILY_START = "2015-01-01"
+
+# Yahoo intraday retention (free tier), used by tesla/fetch_prices.py:
+#   1h  -> ~730 days  (the HEADLINE intraday layer: ~7 bars/session realized vol)
+#   5m  -> ~60 days   } recent high-res slices, used only to VALIDATE that the
+#   1m  -> ~7 days    } hourly realized-vol tracks finer-resolution RV.
+TSLA_INTRADAY_WINDOWS = {"1h": "730d", "5m": "60d", "1m": "7d"}
+TSLA_HEADLINE_INTRADAY = "1h"   # the interval whose RV feeds the daily features
+
+# Caches (gitignored under data/). Downloads + feature build run once.
+TSLA_DAILY_CACHE = DATA_DIR / "tsla_daily.parquet"
+TSLA_INTRADAY_CACHE = {iv: DATA_DIR / f"tsla_intraday_{iv}.parquet"
+                       for iv in TSLA_INTRADAY_WINDOWS}
+TSLA_FEATURES_CACHE = DATA_DIR / "tsla_features.parquet"
+
+# Public Tesla news/tweets dataset (the validation baseline + sentiment source).
+# Loader reads any CSV(s) dropped here and auto-detects date/text/sentiment cols.
+KAGGLE_TSLA_DIR = DATA_DIR / "kaggle_tsla"
+TSLA_DAILY_SENTIMENT_CACHE = DATA_DIR / "tsla_daily_sentiment.parquet"
+
+# Results.
+TSLA_DIRECTION_RESULTS = DATA_DIR / "tsla_direction_results.csv"
+TSLA_VOLATILITY_RESULTS = DATA_DIR / "tsla_volatility_results.csv"
+TSLA_COMPARISON_RESULTS = DATA_DIR / "tsla_comparison.csv"
+
+# Horizons (trading days). Direction reuses the parent project's set; volatility
+# reuses the universe run's (one week / two weeks / one month) for a clean
+# apples-to-apples R^2 comparison against R^2 ~ 0.42.
+TSLA_DIR_HORIZONS = [1, 5, 10, 20]
+TSLA_VOL_HORIZONS = [5, 10, 21]

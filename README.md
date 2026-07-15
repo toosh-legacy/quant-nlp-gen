@@ -15,6 +15,7 @@ and *can you predict its **volatility**?* — and is rigorous about the differen
 - 📊 **Volatility is predictable.** Forecasting log realized volatility reaches **R² ≈ 0.42** out-of-sample (positive in all 10 walk-forward years); "will volatility rise?" hits **72% accuracy / MCC 0.45**.
 - 💬 **Sentiment model:** DistilBERT fine-tuned on financial tweets → **88% accuracy** — a strong standalone NLP module (only a minor factor for prediction).
 - 🔎 **Better data > fancier models.** The volatility R² roughly *doubled* by improving the **data and features** (bigger universe, log target, cross-sectional + range-based estimators), not the algorithm.
+- 🚗 **Breadth > depth (Tesla deep dive).** Going deep on *one* stock with real intraday data did **not** beat the broad multi-stock data: single-stock volatility R² fell to ~half (the universe's edge was cross-sectional), direction stayed near-random. Honest negative, kept — see [`docs/TESLA.md`](docs/TESLA.md).
 
 ---
 
@@ -60,6 +61,17 @@ efficient-market literature says it should be.*
 DistilBERT fine-tuned on `zeroshot/twitter-financial-news-sentiment`: **88.1% accuracy, 0.846 macro-F1**
 on held-out validation. (Hugging Face upload optional — see the model card.)
 
+### 🚗 Tesla single-stock deep dive · `tesla/` · [`docs/TESLA.md`](docs/TESLA.md)
+A companion that asks: does going **deep on one stock** (TSLA) with genuine **intraday** data
+(yfinance hourly realized vol) beat the broad, shallow multi-stock data? **Honest answer: no.**
+Direction stays near-random (MCC ≈ 0, *wider* CIs than the 88-stock run); volatility R² falls to
+**~half** the universe's (its 0.42 was mostly *cross-sectional* — which stock is volatile — and one
+stock can't provide that); only "will vol rise?" holds up (**73% / MCC 0.47**, matching the
+universe, since clustering is per-stock). Intraday granularity helped the *target's* cleanliness at
+long horizons but intraday *features* didn't beat daily HAR. **Breadth of data beat depth** — a
+negative result, kept. (No API key: yfinance replaces Alpha Vantage; public Musk-tweet dataset +
+our DistilBERT for sentiment.)
+
 ---
 
 ## How we kept it honest (methodology)
@@ -89,9 +101,15 @@ predictor/
   analysis.py                              # Task A: non-overlap · conviction · per-sector cross-checks
   volatility.py                            # Task B: volatility regime on StockNet
   volatility_universe.py                   # Task B pro: best vol forecaster ← volatility headline
+tesla/                                     # single-stock TSLA deep dive (intraday-enriched)
+  fetch_prices.py                          # yfinance daily + intraday (1h/5m/1m) + realized vol
+  kaggle_baseline.py · sentiment_features.py # public Musk-tweet baseline + DistilBERT sentiment
+  features.py                              # technical + HAR + range + intraday + sentiment table
+  direction.py · volatility.py · compare.py  # models + the honest three-way comparison
 app.py                                     # Streamlit demo (pick a ticker + horizon)
 docs/METRICS.md                            # plain-language guide to every metric
-tests/                                     # leakage · labels · embargo · metric correctness (19 tests)
+docs/TESLA.md                              # the TSLA deep dive writeup + honest verdict
+tests/                                     # leakage · labels · embargo · metric correctness (26 tests)
 .github/workflows/ci.yml                   # runs the tests on every push
 ```
 
