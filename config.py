@@ -87,6 +87,51 @@ TEST_START = "2015-10-01"
 TEST_END = "2016-01-01"
 
 # ---------------------------------------------------------------------------
+# Prediction horizons — "how far ahead can we predict?"
+# ---------------------------------------------------------------------------
+# We predict the direction of the return from close[t] to close[t+h] for several
+# horizons h (in trading days) and compare how predictability changes with horizon.
+# 1 = next day, 5 = next week, 10 = next two weeks.
+HORIZONS = [1, 5, 10]
+DEFAULT_HORIZON = 5  # the horizon the demo/tests default to
+
+
+def movement_col(h: int) -> str:
+    """Name of the up/down label column for horizon h (e.g. 'movement_5')."""
+    return f"movement_{h}"
+
+
+def label_date_col(h: int) -> str:
+    """Name of the column holding the calendar date of the h-days-ahead close, used to
+    embargo rows whose outcome window crosses a train/dev/test boundary."""
+    return f"label_date_{h}"
+
+
+def label_split_col(h: int) -> str:
+    """Name of the column holding the split (train/dev/test) of the h-days-ahead close."""
+    return f"label_split_{h}"
+
+
+# Backward-compatible default target (the daily label), used by the demo and some tests.
+TARGET_COL = movement_col(1)
+
+# Two-class movement thresholds. The daily band is StockNet's (Xu & Cohen 2018):
+# up if next-day return >= +0.55%, down if <= -0.50%, drop the ambiguous middle. For a
+# longer horizon h, returns scale roughly with sqrt(h) (random-walk volatility), so we
+# scale the band by sqrt(h). This keeps the fraction of dropped "ambiguous" rows about
+# constant across horizons, which makes the horizon comparison FAIR: a higher accuracy at
+# 10 days then reflects real signal, not just a looser bar on bigger moves.
+_DAILY_UP = 0.0055
+_DAILY_DOWN = -0.005
+
+
+def horizon_thresholds(h: int) -> tuple[float, float]:
+    """(up_threshold, down_threshold) for horizon h, scaled by sqrt(h) from the daily band."""
+    scale = float(h) ** 0.5
+    return _DAILY_UP * scale, _DAILY_DOWN * scale
+
+
+# ---------------------------------------------------------------------------
 # Feature column lists
 # ---------------------------------------------------------------------------
 # Price-based technical features (computed in features/build_features.py). Each is
@@ -98,6 +143,10 @@ PRICE_FEATURE_COLS = [
     "ma_10_ratio",     # close / 10-day moving average
     "volatility_5d",   # rolling std of daily returns (5d)
     "volume_change",   # today's volume vs prior day
+    "rsi_14",          # Wilder's 14-day Relative Strength Index (0-100)
+    "macd",            # MACD line: EMA(12) - EMA(26) of close
+    "macd_signal",     # 9-day EMA of the MACD line
+    "macd_hist",       # MACD histogram: macd - macd_signal
 ]
 
 # Sentiment-based features (computed in step 3 from the fine-tuned model's scores).
@@ -106,6 +155,3 @@ SENTIMENT_FEATURE_COLS = [
     "sent_tweet_count", # how many tweets that ticker-day had (log-scaled at use)
     "sent_bull_ratio",  # bullish / (bullish + bearish) among the day's tweets
 ]
-
-# The prediction target: 1 if next-day close moves up, 0 otherwise (StockNet's label).
-TARGET_COL = "movement"

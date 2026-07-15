@@ -1,24 +1,24 @@
-"""Step 6 (training half) — Train the movement predictors.
+"""Train the movement predictors, for each prediction horizon.
 
-Trains the three honest variants the whole project is about, for each of two model
-families:
+For a horizon h (in trading days) we predict the direction of the return from close[t] to
+close[t+h]. The three honest feature variants the project is about:
 
   * price-only     — technical factors, no text
   * sentiment-only — the daily sentiment factor, no price
   * combined        — both
 
-Families:
-  * LogisticRegression — the simple, transparent baseline you should always try first.
-  * XGBoost            — gradient-boosted trees, what quant teams actually reach for on
-                          tabular multi-factor data; it can pick up nonlinear interactions
-                          a linear model can't.
+and two model families:
 
-Standardization: the linear model is sensitive to feature scale, so we fit a
-StandardScaler on the TRAIN split only and reuse it — fitting the scaler on dev/test
-would leak distributional information from the future into training.
+  * LogisticRegression (`class_weight="balanced"`) — the simple, transparent baseline.
+  * XGBoost, hyperparameter-tuned on the dev split — gradient-boosted trees, what quant
+    teams reach for on tabular multi-factor data.
 
-Nothing here touches the test split — that is reserved for evaluate.py, run once at the
-very end.
+Two disciplines keep the numbers honest:
+  * Standardization / tuning use ONLY train and dev. Test is never touched here.
+  * Embargo: because a horizon-h label's outcome window overlaps its neighbors', we keep a
+    row for horizon h only if its outcome day (t+h) lands in the SAME split as its feature
+    day (t). That prevents a train example's outcome from overlapping a dev/test example's
+    outcome, which would otherwise inflate the score.
 """
 
 from __future__ import annotations
@@ -40,14 +40,23 @@ FEATURE_SETS: dict[str, list[str]] = {
     "combined": config.PRICE_FEATURE_COLS + config.SENTIMENT_FEATURE_COLS,
 }
 
+# Fixed XGBoost settings shared across the tuning search.
+XGB_BASE = dict(
+    random_state=config.RANDOM_SEED,
+    n_jobs=-1,
+    eval_metric="logloss",
+    tree_method="hist",
+)
+
 
 @dataclass
 class TrainedModel:
-    """A fitted estimator plus the scaler and columns it expects, so evaluate.py can apply
-    it to the test split identically."""
+    """A fitted estimator plus the scaler + columns it expects, so evaluation can apply it
+    to the test split identically."""
     name: str            # e.g. "xgboost/combined"
     family: str          # "logreg" | "xgboost"
     feature_set: str     # "price_only" | "sentiment_only" | "combined"
+    horizon: int
     columns: list[str]
     scaler: object | None
     estimator: object
@@ -61,6 +70,16 @@ def load_combined() -> pd.DataFrame:
     return pd.read_parquet(config.COMBINED_FEATURES_PATH)
 
 
+def embargoed_frame(df: pd.DataFrame, h: int) -> pd.DataFrame:
+    """Rows usable for horizon h: the label is defined AND the outcome day (t+h) is in the
+    same split as the feature day (t). Adds an integer working target column `y`."""
+    label_defined = df[config.movement_col(h)].notna()
+    same_split = df["split"] == df[config.label_split_col(h)]
+    out = df[label_defined & same_split].copy()
+    out["y"] = out[config.movement_col(h)].astype(int)
+    return out.reset_index(drop=True)
+
+
 def split_frame(df: pd.DataFrame, split: str) -> pd.DataFrame:
     return df[df["split"] == split].reset_index(drop=True)
 
@@ -68,60 +87,92 @@ def split_frame(df: pd.DataFrame, split: str) -> pd.DataFrame:
 def _fit_logreg(X_train, y_train):
     from sklearn.linear_model import LogisticRegression
 
-    clf = LogisticRegression(max_iter=1000, random_state=config.RANDOM_SEED)
-    clf.fit(X_train, y_train)
-    return clf
-
-
-def _fit_xgboost(X_train, y_train):
-    from xgboost import XGBClassifier
-
-    clf = XGBClassifier(
-        n_estimators=300,
-        max_depth=3,          # shallow trees resist overfitting on a noisy, near-random target
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        reg_lambda=1.0,
-        random_state=config.RANDOM_SEED,
-        n_jobs=-1,
-        eval_metric="logloss",
-        tree_method="hist",
+    clf = LogisticRegression(
+        max_iter=1000, random_state=config.RANDOM_SEED, class_weight="balanced"
     )
     clf.fit(X_train, y_train)
     return clf
 
 
-def train_all(df: pd.DataFrame) -> list[TrainedModel]:
-    """Fit every (family x feature-set) combination on the train split. The scaler for the
-    linear models is fit on train only to avoid leaking future statistics."""
+def _fit_xgboost(X_train, y_train, params: dict):
+    from xgboost import XGBClassifier
+
+    clf = XGBClassifier(**XGB_BASE, **params)
+    clf.fit(X_train, y_train)
+    return clf
+
+
+def tune_xgboost(train: pd.DataFrame, dev: pd.DataFrame, cols: list[str]) -> tuple[dict, float]:
+    """Small randomized search over XGBoost params, selected by dev-split MCC. Returns the
+    best params (including a class-imbalance-aware scale_pos_weight) and its dev MCC.
+
+    We select on MCC, not accuracy, because on a ~50/50 target accuracy barely moves; MCC is
+    what we actually care about. Tuning touches only train (fit) and dev (score) — never test.
+    """
+    from sklearn.metrics import matthews_corrcoef
+    from sklearn.model_selection import ParameterSampler
+
+    X_tr, y_tr = train[cols].to_numpy(dtype=float), train["y"].to_numpy()
+    X_dv, y_dv = dev[cols].to_numpy(dtype=float), dev["y"].to_numpy()
+
+    # scale_pos_weight counteracts class imbalance (ratio of negatives to positives).
+    n_pos = max(1, int((y_tr == 1).sum()))
+    n_neg = int((y_tr == 0).sum())
+    spw = n_neg / n_pos
+
+    grid = {
+        "max_depth": [2, 3, 4],
+        "n_estimators": [200, 400],
+        "learning_rate": [0.03, 0.05, 0.1],
+        "subsample": [0.7, 0.9],
+        "colsample_bytree": [0.7, 0.9],
+        "reg_lambda": [1.0, 3.0],
+        "scale_pos_weight": [1.0, spw],
+    }
+
+    best_params: dict | None = None
+    best_mcc = -2.0
+    for params in ParameterSampler(grid, n_iter=24, random_state=config.RANDOM_SEED):
+        clf = _fit_xgboost(X_tr, y_tr, params)
+        mcc = matthews_corrcoef(y_dv, clf.predict(X_dv))
+        if mcc > best_mcc:
+            best_mcc, best_params = mcc, params
+    assert best_params is not None
+    return best_params, best_mcc
+
+
+def train_all(df: pd.DataFrame, h: int) -> tuple[list[TrainedModel], pd.DataFrame]:
+    """Fit every (family x feature-set) combination for horizon h. Returns the trained
+    models and the embargoed frame (so the caller can pull its test split)."""
     from sklearn.preprocessing import StandardScaler
 
-    train = split_frame(df, "train")
-    y_train = train[config.TARGET_COL].to_numpy()
+    frame = embargoed_frame(df, h)
+    train = split_frame(frame, "train")
+    dev = split_frame(frame, "dev")
+    y_train = train["y"].to_numpy()
 
     models: list[TrainedModel] = []
     for fs_name, cols in FEATURE_SETS.items():
         X_train_raw = train[cols].to_numpy(dtype=float)
 
-        # Linear model: standardized inputs.
+        # Linear model: standardized inputs, scaler fit on train only.
         scaler = StandardScaler().fit(X_train_raw)
-        X_train_std = scaler.transform(X_train_raw)
-        logreg = _fit_logreg(X_train_std, y_train)
+        logreg = _fit_logreg(scaler.transform(X_train_raw), y_train)
         models.append(TrainedModel(
-            name=f"logreg/{fs_name}", family="logreg", feature_set=fs_name,
+            name=f"logreg/{fs_name}", family="logreg", feature_set=fs_name, horizon=h,
             columns=cols, scaler=scaler, estimator=logreg,
         ))
 
-        # Trees: scale-invariant, so no scaler needed.
-        xgb = _fit_xgboost(X_train_raw, y_train)
+        # XGBoost: tuned on dev, scale-invariant so no scaler.
+        best_params, dev_mcc = tune_xgboost(train, dev, cols)
+        xgb = _fit_xgboost(X_train_raw, y_train, best_params)
         models.append(TrainedModel(
-            name=f"xgboost/{fs_name}", family="xgboost", feature_set=fs_name,
+            name=f"xgboost/{fs_name}", family="xgboost", feature_set=fs_name, horizon=h,
             columns=cols, scaler=None, estimator=xgb,
         ))
-        print(f"  trained {fs_name}: logreg + xgboost")
+        print(f"  h={h:>2} {fs_name:14s}: logreg + xgboost (tuned, dev MCC={dev_mcc:+.4f})")
 
-    return models
+    return models, frame
 
 
 def predict(model: TrainedModel, df: pd.DataFrame) -> np.ndarray:
@@ -133,14 +184,12 @@ def predict(model: TrainedModel, df: pd.DataFrame) -> np.ndarray:
 
 
 if __name__ == "__main__":
-    # Standalone sanity run: train and report train-split accuracy (not a real metric,
-    # just confirms the models fit). Real evaluation lives in evaluate.py.
+    # Standalone sanity run for the default horizon: train + report train-split accuracy.
     from sklearn.metrics import accuracy_score
 
-    frame = load_combined()
-    print("Split sizes:", frame["split"].value_counts().to_dict())
-    trained = train_all(frame)
+    frame_df = load_combined()
+    trained, frame = train_all(frame_df, config.DEFAULT_HORIZON)
     tr = split_frame(frame, "train")
     for m in trained:
-        acc = accuracy_score(tr[config.TARGET_COL], predict(m, tr))
+        acc = accuracy_score(tr["y"], predict(m, tr))
         print(f"  {m.name:24s} train-acc={acc:.3f}")

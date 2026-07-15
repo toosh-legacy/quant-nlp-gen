@@ -1,15 +1,17 @@
-"""Step 6 (evaluation half) — the honest comparison table.
+"""The honest comparison — now across prediction horizons: "how far ahead can we predict?"
 
-Trains on train, selects on dev, and touches the test split exactly once to report the
-final numbers for all three variants x two model families:
+For each horizon h in config.HORIZONS (1, 5, 10 trading days) we train on train, tune
+XGBoost on dev, and touch the test split exactly once to report accuracy / macro-F1 / MCC
+for all three feature variants x two model families. Then a compact horizon-summary shows
+the best MCC at each horizon, which is the answer to the headline question.
 
-    accuracy | macro-F1 | MCC
+Why MCC? On a ~50/50 up/down target, plain accuracy can look fine while the model just
+predicts the majority direction. MCC (Matthews Correlation Coefficient, -1..1) only moves
+away from 0 when the model beats chance across BOTH classes, so it stays honest under mild
+imbalance and is comparable to the StockNet paper.
 
-Why MCC (Matthews Correlation Coefficient)? On a near-50/50 up/down task, plain accuracy
-can look fine while the model just predicts the majority direction. MCC is a single number
-in [-1, 1] that only moves away from 0 when the model is right across BOTH classes in a way
-that beats chance, so it stays honest under mild imbalance. It is the metric the original
-StockNet paper leans on, which also makes our numbers directly comparable to theirs.
+Embargo note: each horizon's rows are filtered so a training example's h-day outcome window
+never overlaps a dev/test example's — see predictor.train_predictor.embargoed_frame.
 
 Run:
     python predictor/evaluate.py
@@ -40,19 +42,21 @@ def score(y_true, y_pred) -> dict[str, float]:
     }
 
 
-def evaluate_models(df: pd.DataFrame, models: list[TrainedModel], split: str) -> pd.DataFrame:
-    """Evaluate every trained model on the requested split and return a tidy table."""
-    part = split_frame(df, split)
-    y_true = part[config.TARGET_COL].to_numpy()
+def evaluate_models(test: pd.DataFrame, models: list[TrainedModel]) -> pd.DataFrame:
+    """Evaluate every trained model on the (embargoed) test split for its horizon."""
+    y_true = test["y"].to_numpy()
     rows = []
     for m in models:
-        metrics = score(y_true, predict(m, part))
-        rows.append({"model": m.name, "family": m.family, "features": m.feature_set, **metrics})
+        metrics = score(y_true, predict(m, test))
+        rows.append({
+            "horizon": m.horizon, "model": m.name, "family": m.family,
+            "features": m.feature_set, **metrics,
+        })
     return pd.DataFrame(rows)
 
 
 def _format_table(table: pd.DataFrame) -> str:
-    show = table[["model", "accuracy", "f1_macro", "mcc"]].copy()
+    show = table[["horizon", "model", "accuracy", "f1_macro", "mcc"]].copy()
     for c in ("accuracy", "f1_macro", "mcc"):
         show[c] = show[c].map(lambda v: f"{v:.4f}")
     return show.to_string(index=False)
@@ -60,34 +64,49 @@ def _format_table(table: pd.DataFrame) -> str:
 
 def main() -> None:
     df = load_combined()
-    counts = df.groupby("split")[config.TARGET_COL].agg(["count", "mean"])
-    print("Split sizes and up-rate (mean of target):")
-    print(counts.to_string(), "\n")
 
-    print("Training all variants on the train split...")
-    models = train_all(df)
+    all_tables = []
+    for h in config.HORIZONS:
+        print(f"\n### Horizon = {h} trading day(s) — training + tuning on train/dev...")
+        models, frame = train_all(df, h)
+        test = split_frame(frame, "test")
+        up_rate = test["y"].mean()
+        print(f"  test rows (embargoed): {len(test)}   up-rate: {up_rate:.3f}")
+        all_tables.append(evaluate_models(test, models))
 
-    # Dev is where you'd tune; we report it for transparency but do not select on test.
-    dev_table = evaluate_models(df, models, "dev")
-    print("\n=== DEV split ===")
-    print(_format_table(dev_table))
+    results = pd.concat(all_tables, ignore_index=True)
 
-    # Test: touched once, at the very end.
-    test_table = evaluate_models(df, models, "test")
-    print("\n=== TEST split (final, reported once) ===")
-    print(_format_table(test_table))
+    print("\n=== TEST split — full comparison (reported once) ===")
+    print(_format_table(results))
 
-    # Persist the test table for the README/write-up.
+    # Horizon summary: the best MCC achieved at each horizon, and by which model. This is the
+    # direct answer to "how far can we predict?"
+    print("\n=== Horizon summary — best MCC per horizon ===")
+    summary_rows = []
+    for h in config.HORIZONS:
+        sub = results[results["horizon"] == h]
+        best = sub.loc[sub["mcc"].idxmax()]
+        summary_rows.append({
+            "horizon": h, "best_model": best["model"],
+            "accuracy": best["accuracy"], "f1_macro": best["f1_macro"], "mcc": best["mcc"],
+        })
+    summary = pd.DataFrame(summary_rows)
+    show = summary.copy()
+    for c in ("accuracy", "f1_macro", "mcc"):
+        show[c] = show[c].map(lambda v: f"{v:.4f}")
+    print(show.to_string(index=False))
+
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    test_table.to_csv(config.RESULTS_PATH, index=False)
-    print(f"\nWrote comparison table -> {config.RESULTS_PATH}")
+    results.to_csv(config.RESULTS_PATH, index=False)
+    print(f"\nWrote full comparison table -> {config.RESULTS_PATH}")
 
-    # Headline: did adding sentiment help, on the metric the paper cares about?
-    for family in ("logreg", "xgboost"):
-        fam = test_table[test_table["family"] == family].set_index("features")
+    # Does adding sentiment help the combined model, per horizon (on MCC)?
+    for h in config.HORIZONS:
+        sub = results[(results["horizon"] == h) & (results["family"] == "xgboost")]
+        fam = sub.set_index("features")
         if {"price_only", "combined"}.issubset(fam.index):
             delta = fam.loc["combined", "mcc"] - fam.loc["price_only", "mcc"]
-            print(f"  [{family}] combined MCC - price-only MCC = {delta:+.4f}")
+            print(f"  [xgboost h={h}] combined MCC - price-only MCC = {delta:+.4f}")
 
 
 if __name__ == "__main__":

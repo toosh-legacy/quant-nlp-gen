@@ -29,18 +29,18 @@ def _load() -> pd.DataFrame:
 
 
 @st.cache_resource(show_spinner="Training predictors...")
-def _models(_df: pd.DataFrame):
-    # Trained once and cached for the session. We surface the XGBoost/combined model as the
-    # headline predictor in the demo.
-    trained = train_all(_df)
+def _models(_df: pd.DataFrame, horizon: int):
+    # Trained once per horizon and cached for the session. XGBoost is tuned on the dev split
+    # inside train_all.
+    trained, _frame = train_all(_df, horizon)
     return {m.name: m for m in trained}
 
 
 st.title("📈 Financial Sentiment & Market Signal")
 st.caption(
-    "Combines a fine-tuned DistilBERT sentiment factor with technical price factors to "
-    "predict next-day stock direction on the StockNet benchmark (Xu & Cohen, ACL 2018). "
-    "Educational demo — not investment advice."
+    "Predicts stock-price direction over a chosen horizon on the StockNet benchmark "
+    "(Xu & Cohen, ACL 2018), combining technical price factors with a fine-tuned DistilBERT "
+    "sentiment factor. Educational demo — not investment advice."
 )
 
 if not config.COMBINED_FEATURES_PATH.exists():
@@ -51,12 +51,20 @@ if not config.COMBINED_FEATURES_PATH.exists():
     st.stop()
 
 df = _load()
-models = _models(df)
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
     ticker = st.selectbox("Ticker", sorted(df["ticker"].unique()))
 with col2:
+    horizon = st.selectbox(
+        "Horizon (trading days ahead)", config.HORIZONS,
+        index=config.HORIZONS.index(config.DEFAULT_HORIZON),
+    )
+
+models = _models(df, horizon)
+mv_col = config.movement_col(horizon)
+
+with col3:
     model_name = st.selectbox(
         "Model", list(models.keys()),
         index=list(models.keys()).index("xgboost/combined") if "xgboost/combined" in models else 0,
@@ -105,17 +113,24 @@ except Exception:
 st.subheader("Prediction")
 direction = "⬆️ UP" if pred == 1 else "⬇️ DOWN"
 pcol1, pcol2, pcol3 = st.columns(3)
-pcol1.metric("Predicted next-day direction", direction)
+pcol1.metric(f"Predicted direction ({horizon}d ahead)", direction)
 if proba is not None:
     pcol2.metric("P(up)", f"{proba:.1%}")
-actual = "⬆️ UP" if int(row[config.TARGET_COL]) == 1 else "⬇️ DOWN"
-pcol3.metric("Actual (realized)", actual)
 
-hit = pred == int(row[config.TARGET_COL])
-st.success("Model was correct on this day ✅") if hit else st.info("Model missed on this day ❌")
+# The realized label can be NaN when the move fell inside the ambiguous dead band (those
+# rows are excluded from training/scoring) or when the horizon runs past the data end.
+actual_val = row[mv_col]
+if pd.isna(actual_val):
+    pcol3.metric("Actual (realized)", "— (ambiguous / n.a.)")
+    st.info("This day's realized move fell in the neutral dead band, so it's excluded from the scored set.")
+else:
+    actual_int = int(actual_val)
+    pcol3.metric("Actual (realized)", "⬆️ UP" if actual_int == 1 else "⬇️ DOWN")
+    hit = pred == actual_int
+    st.success("Model was correct on this day ✅") if hit else st.info("Model missed on this day ❌")
 
 st.caption(
     f"Split: **{row['split']}**  ·  Features used by `{model_name}`: {', '.join(cols)}. "
-    "Remember: on this task even good models land only modestly above 50% — see the README "
-    "comparison table."
+    "Remember: even the best variant lands only modestly above 50% — predictability rises a "
+    "little with horizon. See the README horizon table."
 )

@@ -40,9 +40,9 @@ import config  # noqa: E402
 
 # StockNet's two-class movement thresholds (from Xu & Cohen 2018). Days whose next-day
 # return falls in the ambiguous middle band are dropped so the up/down task is well-posed
-# and the numbers stay comparable to the published baseline.
-UP_THRESHOLD = 0.0055     # next-day return >= +0.55%  -> up   (label 1)
-DOWN_THRESHOLD = -0.005   # next-day return <= -0.50%  -> down (label 0)
+# and the numbers stay comparable to the published baseline. The daily band (Xu & Cohen
+# 2018) is +0.55% / -0.50%; for longer horizons it is scaled by sqrt(h) — see
+# config.horizon_thresholds(), which is the single source of truth for the thresholds.
 
 
 # ---------------------------------------------------------------------------
@@ -61,8 +61,10 @@ def load_prices(ticker: str) -> pd.DataFrame:
     df = pd.read_csv(path, parse_dates=["Date"]).rename(columns=str.lower)
     df = df.rename(columns={"adj close": "adj_close"})
     df = df.sort_values("date").reset_index(drop=True)
-    # Keep a ~40-trading-day lead-in before TRAIN_START so a 10-day MA is defined on day one.
-    lead_in = pd.Timestamp(config.TRAIN_START) - pd.Timedelta(days=90)
+    # Keep a lead-in before TRAIN_START so the slowest indicator (MACD's 26-day EMA + 9-day
+    # signal, and the 14-day RSI) is defined on the first training day. ~150 calendar days
+    # comfortably covers ~35+ needed trading days.
+    lead_in = pd.Timestamp(config.TRAIN_START) - pd.Timedelta(days=150)
     df = df[(df["date"] >= lead_in) & (df["date"] < pd.Timestamp(config.TEST_END))]
     return df.reset_index(drop=True)
 
@@ -88,11 +90,31 @@ def load_tweets_for_date(ticker: str, date_str: str) -> list[str]:
 # ---------------------------------------------------------------------------
 # Step 4 — price (technical) features
 # ---------------------------------------------------------------------------
-def compute_price_features(prices: pd.DataFrame) -> pd.DataFrame:
-    """Standard technical factors + the next-day movement label, for one ticker.
+def _wilder_rsi(px: pd.Series, period: int = 14) -> pd.Series:
+    """Wilder's Relative Strength Index (0-100), computed causally over past closes only.
 
-    All feature columns use only data up to and including each row's own day. The label
-    uses the *next* day's close (the thing we predict) and is NOT a feature.
+    RSI measures how one-sided recent moves have been: >70 = overbought, <30 = oversold.
+    Uses only data up to and including each day (the exponential averages are trailing), so
+    it introduces no lookahead.
+    """
+    delta = px.diff()
+    gain = delta.clip(lower=0.0)
+    loss = -delta.clip(upper=0.0)
+    # Wilder's smoothing = EMA with alpha = 1/period (min_periods so early values are NaN).
+    avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0.0, np.nan)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    # When there were no losses in the window, RSI is 100 by definition.
+    rsi = rsi.where(avg_loss != 0.0, 100.0)
+    return rsi
+
+
+def compute_price_features(prices: pd.DataFrame) -> pd.DataFrame:
+    """Technical factors + multi-horizon movement labels, for one ticker.
+
+    All feature columns use only data up to and including each row's own day. The labels
+    look FORWARD by h trading days (that's the future we forecast) and are NOT features.
     """
     df = prices.copy()
     px = df["adj_close"]
@@ -110,14 +132,33 @@ def compute_price_features(prices: pd.DataFrame) -> pd.DataFrame:
     # Volume change vs prior day.
     df["volume_change"] = df["volume"].pct_change(1)
 
-    # --- Label: direction of the NEXT trading day's return (the future we forecast) ---
-    # shift(-1) looks one row FORWARD on purpose — this is the target, not a feature.
-    next_return = px.shift(-1) / px - 1.0
-    df["next_return"] = next_return
-    df[config.TARGET_COL] = np.where(
-        next_return >= UP_THRESHOLD, 1,
-        np.where(next_return <= DOWN_THRESHOLD, 0, np.nan),
-    )
+    # RSI(14) — momentum oscillator, causal.
+    df["rsi_14"] = _wilder_rsi(px, 14)
+
+    # MACD(12, 26, 9) — trend/momentum. All three lines are trailing EMAs (adjust=False),
+    # so nothing here peeks at future prices.
+    ema_12 = px.ewm(span=12, adjust=False).mean()
+    ema_26 = px.ewm(span=26, adjust=False).mean()
+    df["macd"] = ema_12 - ema_26
+    df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+    df["macd_hist"] = df["macd"] - df["macd_signal"]
+
+    # --- Labels: direction of the return over the next h trading days, per horizon ---
+    # px.shift(-h) looks h rows FORWARD on purpose — this is the target, not a feature.
+    # The band is scaled by sqrt(h) so the drop-rate of ambiguous days is ~constant across
+    # horizons (see config.horizon_thresholds), keeping the horizon comparison fair.
+    for h in config.HORIZONS:
+        up_thr, down_thr = config.horizon_thresholds(h)
+        fwd_return = px.shift(-h) / px - 1.0
+        if h == 1:
+            df["next_return_1"] = fwd_return  # kept for readability / tests
+        df[config.movement_col(h)] = np.where(
+            fwd_return >= up_thr, 1,
+            np.where(fwd_return <= down_thr, 0, np.nan),
+        )
+        # Calendar date of the h-days-ahead close, used later to embargo rows whose outcome
+        # window crosses a train/dev/test boundary.
+        df[config.label_date_col(h)] = df["date"].shift(-h)
 
     return df
 
@@ -264,8 +305,13 @@ def assign_split(dates: pd.Series) -> pd.Series:
 
 
 def build_combined(tickers: list[str], sent_df: pd.DataFrame | None) -> pd.DataFrame:
-    """Join price + sentiment features per ticker-day, attach label + split, drop the
-    ambiguous-movement rows and rows without a valid split."""
+    """Join price + sentiment features per ticker-day, attach the multi-horizon labels and
+    the split of both the feature day and each horizon's outcome day (for the embargo).
+
+    We keep every row with finite features here; per-horizon label validity + the embargo
+    (feature-day split == outcome-day split) are applied at evaluation time so the same
+    table serves all horizons.
+    """
     frames = []
     for ticker in tickers:
         try:
@@ -292,7 +338,10 @@ def build_combined(tickers: list[str], sent_df: pd.DataFrame | None) -> pd.DataF
     # Log-scale the raw count so a day with 200 tweets doesn't dwarf a day with 5.
     df["sent_tweet_count"] = np.log1p(df["sent_tweet_count"].astype(float))
 
+    # Split of the feature day, and split of each horizon's outcome day (for the embargo).
     df["split"] = assign_split(df["date"])
+    for h in config.HORIZONS:
+        df[config.label_split_col(h)] = assign_split(df[config.label_date_col(h)])
 
     # A prior-day volume of 0 makes volume_change divide by zero -> +/-inf. Treat those
     # (and any other non-finite feature) as missing so the dropna below removes the row
@@ -301,13 +350,15 @@ def build_combined(tickers: list[str], sent_df: pd.DataFrame | None) -> pd.DataF
         [np.inf, -np.inf], np.nan
     )
 
-    # Keep only well-posed rows: inside the split window, with a defined label and defined
-    # price features.
+    # Keep rows that are inside a split window and have all price features defined. We do
+    # NOT drop on the labels here — a row may be valid for one horizon and not another; that
+    # per-horizon filtering (plus the embargo) happens at evaluation time.
     before = len(df)
-    df = df.dropna(subset=[config.TARGET_COL, *config.PRICE_FEATURE_COLS])
+    df = df.dropna(subset=config.PRICE_FEATURE_COLS)
     df = df[df["split"].notna()].copy()
-    df[config.TARGET_COL] = df[config.TARGET_COL].astype(int)
-    print(f"Combined table: {len(df)} usable ticker-days (dropped {before - len(df)}).")
+    n_labeled = {h: int(df[config.movement_col(h)].notna().sum()) for h in config.HORIZONS}
+    print(f"Combined table: {len(df)} rows with features (dropped {before - len(df)}).")
+    print(f"  labeled rows per horizon (pre-embargo): {n_labeled}")
     return df.reset_index(drop=True)
 
 

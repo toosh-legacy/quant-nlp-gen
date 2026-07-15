@@ -61,27 +61,59 @@ def test_price_features_do_not_use_future_prices():
     # Sanity: the label for the day BEFORE the perturbation *should* change, proving the
     # label genuinely looks one step forward (and that our test can detect a change).
     assert not np.allclose(
-        base["next_return"].to_numpy()[perturb_i - 1],
-        perturbed["next_return"].to_numpy()[perturb_i - 1],
+        base["next_return_1"].to_numpy()[perturb_i - 1],
+        perturbed["next_return_1"].to_numpy()[perturb_i - 1],
         equal_nan=True,
     )
 
 
-def test_label_is_next_day_direction():
-    """movement==1 iff the next-day return clears the up threshold; ==0 iff below the down
-    threshold; NaN in the ambiguous band."""
+def test_labels_use_h_days_ahead_with_scaled_thresholds():
+    """For every horizon, movement_h==1 iff the h-day-ahead return clears the (sqrt(h)-scaled)
+    up threshold; ==0 iff below the down threshold; NaN in between. This confirms the label
+    genuinely looks h steps forward and uses the fair, horizon-scaled band."""
     prices = _synthetic_prices()
     feats = compute_price_features(prices)
     px = prices["adj_close"].to_numpy()
-    for i in range(len(prices) - 1):
-        nxt = px[i + 1] / px[i] - 1.0
-        label = feats[config.TARGET_COL].to_numpy()[i]
-        if nxt >= 0.0055:
-            assert label == 1
-        elif nxt <= -0.005:
-            assert label == 0
-        else:
-            assert np.isnan(label)
+    for h in config.HORIZONS:
+        up_thr, down_thr = config.horizon_thresholds(h)
+        col = feats[config.movement_col(h)].to_numpy()
+        for i in range(len(prices) - h):
+            fwd = px[i + h] / px[i] - 1.0
+            if fwd >= up_thr:
+                assert col[i] == 1
+            elif fwd <= down_thr:
+                assert col[i] == 0
+            else:
+                assert np.isnan(col[i])
+
+
+def test_rsi_and_macd_are_well_formed():
+    """RSI stays in [0, 100]; the MACD histogram equals macd - signal exactly."""
+    prices = _synthetic_prices(n=120)
+    feats = compute_price_features(prices)
+    rsi = feats["rsi_14"].dropna().to_numpy()
+    assert (rsi >= 0).all() and (rsi <= 100).all()
+    assert np.allclose(
+        feats["macd_hist"].to_numpy(),
+        (feats["macd"] - feats["macd_signal"]).to_numpy(),
+        equal_nan=True,
+    )
+
+
+def test_rsi_macd_do_not_leak_future():
+    """RSI/MACD are EMA-based; confirm they too are causal — perturbing a future close leaves
+    earlier RSI/MACD values untouched."""
+    prices = _synthetic_prices(n=120)
+    base = compute_price_features(prices)
+    perturb_i = 90
+    p2 = prices.copy()
+    p2.loc[perturb_i, ["adj_close", "close"]] += 30.0
+    perturbed = compute_price_features(p2)
+    earlier = slice(0, perturb_i)  # indices 0..perturb_i-1 must be unchanged
+    for col in ("rsi_14", "macd", "macd_signal", "macd_hist"):
+        assert np.allclose(
+            base[col].to_numpy()[earlier], perturbed[col].to_numpy()[earlier], equal_nan=True
+        ), f"{col} leaked future data!"
 
 
 def test_sentiment_rolls_forward_never_backward():
