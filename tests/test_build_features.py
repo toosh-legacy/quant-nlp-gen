@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config  # noqa: E402
@@ -17,6 +18,7 @@ from features.build_features import (  # noqa: E402
     _roll_sentiment_onto_trading_days,
     assign_split,
     compute_price_features,
+    load_ticker_sectors,
 )
 
 
@@ -151,3 +153,16 @@ def test_assign_split_boundaries_are_chronological_and_half_open():
     assert splits[2] == "test"            # TEST_START begins test
     assert splits[3] == "test"            # last day inside test
     assert splits[4] is np.nan or splits[4] != splits[4]  # TEST_END excluded (NaN)
+
+
+@pytest.mark.skipif(
+    not (config.STOCKNET_DIR / "StockTable").exists(),
+    reason="StockNet dataset not cloned (StockTable absent).",
+)
+def test_sector_mapping_covers_tickers_across_multiple_sectors():
+    """The per-sector analysis needs a ticker->sector map. Confirm it parses, strips the
+    leading '$', and spans several sectors (StockNet spans 9)."""
+    mapping = load_ticker_sectors()
+    assert mapping.get("AAPL") == "Consumer Goods"
+    assert "$" not in "".join(mapping.keys())
+    assert len({v for v in mapping.values()}) >= 5

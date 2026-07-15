@@ -54,18 +54,39 @@ def list_tickers() -> list[str]:
     return sorted(p.stem for p in price_dir.glob("*.csv"))
 
 
+def load_ticker_sectors() -> dict[str, str]:
+    """Map ticker -> sector from StockNet's StockTable (tab-separated: Sector, $Symbol,
+    Company). Used for the per-sector predictability analysis. Symbols carry a leading '$'."""
+    path = config.STOCKNET_DIR / "StockTable"
+    mapping: dict[str, str] = {}
+    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    for line in lines[1:]:  # skip header
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        sector = parts[0].strip()
+        symbol = parts[1].strip().lstrip("$").upper()
+        if symbol:
+            mapping[symbol] = sector
+    return mapping
+
+
 def load_prices(ticker: str) -> pd.DataFrame:
-    """Load one ticker's raw daily OHLCV, ascending by date, restricted to the project's
-    2014-2016 window plus a small lead-in so early rolling features aren't all-NaN."""
+    """Load one ticker's raw daily OHLCV, ascending by date.
+
+    We keep a lead-in before TRAIN_START so the slowest indicator (MACD's 26-day EMA +
+    9-day signal, and the 14-day RSI) is defined on the first training day. We deliberately
+    do NOT cut the series at TEST_END: prices run to 2017, and the extra tail is needed so
+    that labels for the *last* feature days (close[t+h] for long horizons like 60 days) are
+    computable. Those post-TEST_END rows are used only as label targets — they are dropped
+    as *feature* rows later because their split is undefined.
+    """
     path = config.STOCKNET_DIR / "price" / "raw" / f"{ticker}.csv"
     df = pd.read_csv(path, parse_dates=["Date"]).rename(columns=str.lower)
     df = df.rename(columns={"adj close": "adj_close"})
     df = df.sort_values("date").reset_index(drop=True)
-    # Keep a lead-in before TRAIN_START so the slowest indicator (MACD's 26-day EMA + 9-day
-    # signal, and the 14-day RSI) is defined on the first training day. ~150 calendar days
-    # comfortably covers ~35+ needed trading days.
     lead_in = pd.Timestamp(config.TRAIN_START) - pd.Timedelta(days=150)
-    df = df[(df["date"] >= lead_in) & (df["date"] < pd.Timestamp(config.TEST_END))]
+    df = df[df["date"] >= lead_in]
     return df.reset_index(drop=True)
 
 
@@ -260,9 +281,11 @@ def _roll_sentiment_onto_trading_days(
     tweet date forward to the first trading day >= that date. This keeps weekend chatter
     without ever letting a trading day see tweets from its own future.
     """
+    # The three base per-day aggregates produced by scoring; sent_mean_3d is derived later.
+    base_cols = ["sent_mean", "sent_tweet_count", "sent_bull_ratio"]
     trading_days = price_df["date"].sort_values().to_numpy()
     if len(sent_df) == 0:
-        empty = pd.DataFrame(columns=["date", *config.SENTIMENT_FEATURE_COLS])
+        empty = pd.DataFrame(columns=["date", *base_cols])
         empty["date"] = pd.to_datetime(empty["date"])
         return empty
 
@@ -286,9 +309,7 @@ def _roll_sentiment_onto_trading_days(
     tot = grp["sent_tweet_count"].replace(0, np.nan)
     grp["sent_mean"] = (grp["_wm_sum"] / tot).fillna(0.0)
     grp["sent_bull_ratio"] = (grp["_wb_sum"] / tot).fillna(0.5)
-    rolled = grp.rename(columns={"trading_day": "date"})[
-        ["date", *config.SENTIMENT_FEATURE_COLS]
-    ]
+    rolled = grp.rename(columns={"trading_day": "date"})[["date", *base_cols]]
     # Guarantee the merge key dtype matches the price frame's datetime64 'date'.
     rolled["date"] = pd.to_datetime(rolled["date"])
     return rolled
@@ -337,6 +358,15 @@ def build_combined(tickers: list[str], sent_df: pd.DataFrame | None) -> pd.DataF
             df[col] = fill
     # Log-scale the raw count so a day with 200 tweets doesn't dwarf a day with 5.
     df["sent_tweet_count"] = np.log1p(df["sent_tweet_count"].astype(float))
+
+    # Trailing multi-day sentiment: a causal rolling mean of the daily signed sentiment,
+    # per ticker, over the last SENT_TRAILING_WINDOW trading days (includes day t, which is
+    # allowed — day-t sentiment is known by day t's close). Smooths single-day tweet noise.
+    df = df.sort_values(["ticker", "date"]).reset_index(drop=True)
+    df["sent_mean_3d"] = (
+        df.groupby("ticker")["sent_mean"]
+        .transform(lambda s: s.rolling(config.SENT_TRAILING_WINDOW, min_periods=1).mean())
+    )
 
     # Split of the feature day, and split of each horizon's outcome day (for the embargo).
     df["split"] = assign_split(df["date"])

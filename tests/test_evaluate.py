@@ -12,6 +12,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config  # noqa: E402
+from predictor.analysis import nonoverlap_subsample  # noqa: E402
 from predictor.evaluate import score  # noqa: E402
 from predictor.train_predictor import embargoed_frame  # noqa: E402
 
@@ -57,19 +58,37 @@ def test_majority_class_predictor_has_zero_mcc():
     assert np.isclose(m["mcc"], 0.0)
 
 
-def test_embargo_drops_boundary_crossing_rows():
-    """embargoed_frame keeps a row for horizon h only if the row's outcome day lands in the
-    SAME split as its feature day. A train row whose h-day outcome falls in dev must be
-    dropped (its outcome window would overlap dev examples)."""
+def test_embargo_purges_train_dev_but_lets_test_labels_run_past_window():
+    """The overlapping-window embargo: train/dev rows are kept only if their h-day outcome
+    stays in the same split (so a training label never overlaps a later split). Test rows are
+    kept whenever the label is defined — their outcome may run past the short test window
+    using real later prices, which is not contamination since nothing trains on test."""
     h = config.DEFAULT_HORIZON
     mv, ls = config.movement_col(h), config.label_split_col(h)
     df = pd.DataFrame({
-        "split":          ["train", "train", "dev",   "test"],
-        ls:               ["train", "dev",   "dev",   "test"],   # row 1's outcome leaks to dev
-        mv:               [1.0,      0.0,     1.0,     np.nan],   # row 3 has no label
+        "split": ["train", "train", "dev",  "dev",  "test", "test", "test"],
+        ls:      ["train", "dev",   "dev",  "test", "test", np.nan, np.nan],
+        mv:      [1.0,      0.0,     1.0,    0.0,    1.0,    0.0,    np.nan],
     })
     out = embargoed_frame(df, h)
-    # Row 0 kept (train->train), row 1 dropped (train->dev), row 2 kept (dev->dev),
-    # row 3 dropped (label is NaN).
-    assert out["split"].tolist() == ["train", "dev"]
-    assert out["y"].tolist() == [1, 1]
+    # kept: train->train, dev->dev, test->test, test->(past window, label defined).
+    # dropped: train->dev, dev->test (boundary-crossers), and the test row with no label.
+    assert out["split"].tolist() == ["train", "dev", "test", "test"]
+    assert out["y"].tolist() == [1, 1, 1, 0]
+
+
+def test_nonoverlap_subsample_keeps_every_hth_row_per_ticker():
+    """The non-overlapping cross-check must keep rows h apart within each ticker, so their
+    h-day label windows don't overlap — and it must not bleed across tickers."""
+    h = 5
+    dates = pd.date_range("2014-01-01", periods=12, freq="D")
+    df = pd.DataFrame({
+        "ticker": ["AAA"] * 12 + ["BBB"] * 12,
+        "date": list(dates) + list(dates),
+        "y": list(range(12)) + list(range(12)),
+    })
+    out = nonoverlap_subsample(df, h)
+    # Per ticker we keep positions 0, 5, 10 -> the y values 0, 5, 10.
+    for tkr in ("AAA", "BBB"):
+        kept = out[out["ticker"] == tkr]["y"].tolist()
+        assert kept == [0, 5, 10]

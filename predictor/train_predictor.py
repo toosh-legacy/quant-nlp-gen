@@ -48,6 +48,17 @@ XGB_BASE = dict(
     tree_method="hist",
 )
 
+# Sensible default hyperparameters, used when the dev split is too small to tune on (which
+# happens for the longest horizon, whose outcome window overruns the short StockNet dev
+# window and gets fully embargoed).
+XGB_DEFAULT = dict(
+    max_depth=3, n_estimators=300, learning_rate=0.05,
+    subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0, scale_pos_weight=1.0,
+)
+
+# Minimum dev rows required to trust a hyperparameter search.
+MIN_DEV_ROWS = 100
+
 
 @dataclass
 class TrainedModel:
@@ -71,11 +82,23 @@ def load_combined() -> pd.DataFrame:
 
 
 def embargoed_frame(df: pd.DataFrame, h: int) -> pd.DataFrame:
-    """Rows usable for horizon h: the label is defined AND the outcome day (t+h) is in the
-    same split as the feature day (t). Adds an integer working target column `y`."""
+    """Rows usable for horizon h, with the overlapping-window embargo (purging) applied.
+
+    The label must be defined, and then:
+      * train/dev rows are kept only if their outcome day (t+h) lands in the SAME split as
+        the feature day — this purges rows whose h-day outcome window would spill forward
+        into a later split and contaminate it.
+      * test rows are kept as long as the label is defined. Their outcome day is allowed to
+        extend past the test window (using real later prices we loaded): that is NOT
+        contamination, because nothing is trained on the test split. Requiring test labels
+        to also stay inside the short 3-month test window would needlessly discard most
+        long-horizon test rows.
+    Adds an integer working target column `y`.
+    """
     label_defined = df[config.movement_col(h)].notna()
     same_split = df["split"] == df[config.label_split_col(h)]
-    out = df[label_defined & same_split].copy()
+    is_test = df["split"] == "test"
+    out = df[label_defined & (same_split | is_test)].copy()
     out["y"] = out[config.movement_col(h)].astype(int)
     return out.reset_index(drop=True)
 
@@ -163,14 +186,18 @@ def train_all(df: pd.DataFrame, h: int) -> tuple[list[TrainedModel], pd.DataFram
             columns=cols, scaler=scaler, estimator=logreg,
         ))
 
-        # XGBoost: tuned on dev, scale-invariant so no scaler.
-        best_params, dev_mcc = tune_xgboost(train, dev, cols)
+        # XGBoost: tuned on dev when dev is large enough, else sensible defaults.
+        if len(dev) >= MIN_DEV_ROWS:
+            best_params, dev_mcc = tune_xgboost(train, dev, cols)
+            note = f"tuned, dev MCC={dev_mcc:+.4f}"
+        else:
+            best_params, note = XGB_DEFAULT, f"defaults (dev too small: {len(dev)} rows)"
         xgb = _fit_xgboost(X_train_raw, y_train, best_params)
         models.append(TrainedModel(
             name=f"xgboost/{fs_name}", family="xgboost", feature_set=fs_name, horizon=h,
             columns=cols, scaler=None, estimator=xgb,
         ))
-        print(f"  h={h:>2} {fs_name:14s}: logreg + xgboost (tuned, dev MCC={dev_mcc:+.4f})")
+        print(f"  h={h:>2} {fs_name:14s}: logreg + xgboost ({note})")
 
     return models, frame
 

@@ -91,8 +91,8 @@ TEST_END = "2016-01-01"
 # ---------------------------------------------------------------------------
 # We predict the direction of the return from close[t] to close[t+h] for several
 # horizons h (in trading days) and compare how predictability changes with horizon.
-# 1 = next day, 5 = next week, 10 = next two weeks.
-HORIZONS = [1, 5, 10]
+# 1 = next day, 5 = next week, 10 = two weeks, 20 = one month, 60 = one quarter.
+HORIZONS = [1, 5, 10, 20, 60]
 DEFAULT_HORIZON = 5  # the horizon the demo/tests default to
 
 
@@ -154,4 +154,8 @@ SENTIMENT_FEATURE_COLS = [
     "sent_mean",        # mean signed sentiment score across the day's tweets
     "sent_tweet_count", # how many tweets that ticker-day had (log-scaled at use)
     "sent_bull_ratio",  # bullish / (bullish + bearish) among the day's tweets
+    "sent_mean_3d",     # trailing 3-trading-day mean of sent_mean (smooths single-day noise)
 ]
+
+# Number of trading days in the trailing sentiment window (causal — includes day t).
+SENT_TRAILING_WINDOW = 3
