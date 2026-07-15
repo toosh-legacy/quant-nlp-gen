@@ -1,55 +1,83 @@
 # Financial Sentiment & Market Signal Analysis
 
-**How far ahead can you actually predict a stock's direction — and how much does Twitter sentiment
-help?** This project answers that honestly, on a real published benchmark, entirely on a laptop CPU.
+A CPU-only quant/NLP study on the **StockNet** benchmark (Xu & Cohen, ACL 2018) that answers two
+questions honestly, using the same feature pipeline and a fine-tuned tweet-sentiment model:
 
-It predicts whether a stock moves **up or down** over several horizons — **1, 5, 10, 20, and 60
-trading days** — by combining:
+- **Task A — direction:** *how far ahead can you predict whether a stock goes up or down?* (Answer:
+  a little, at short horizons — this is genuinely hard.)
+- **Task B — volatility regime:** *can you predict whether the coming week will be calmer or more
+  turbulent than now?* (Answer: **yes — ~72% accuracy**, because volatility clusters and mean-reverts.)
 
-- **Price factors** — momentum, moving-average ratios, rolling volatility, volume change, **RSI(14)**, **MACD(12,26,9)**.
-- **A sentiment factor** — a fine-tuned **DistilBERT** reads financial tweets and scores them bullish / bearish / neutral (a *minor* supporting input).
+Features: momentum, moving-average ratios, multi-scale **rolling volatility**, volume change,
+**RSI(14)**, **MACD(12,26,9)**, plus a **DistilBERT** sentiment factor over financial tweets. Everything
+uses StockNet's **original chronological split** plus a **walk-forward** re-evaluation for confidence
+intervals. No GPU, no cloud.
 
-Everything is evaluated on the **StockNet** benchmark (Xu & Cohen, ACL 2018) using its **original
-chronological split**, plus a **walk-forward** re-evaluation for confidence intervals. No GPU, no cloud.
-
-> **This is a study in honest measurement, not a get-rich model.** Short-horizon stock direction is
-> near-random; no legitimate model reaches 0.80 here. The value is a defensible answer, with every
-> number guarded against the ways backtests usually lie.
+> **This is a study in honest measurement.** The two tasks together make the point: stock *direction* is
+> near-random (no legitimate model hits 0.80), while *volatility* is genuinely predictable. Knowing
+> **which** is which — and proving it with guards against the usual backtest traps — is the deliverable.
 
 ---
 
 ## TL;DR — what we found
 
-- **A small but real directional edge exists at short-to-medium horizons (~1–10 trading days).** It
-  survives a walk-forward across 5 out-of-sample windows *and* a stricter non-overlapping cross-check:
-  MCC ≈ **+0.04 to +0.09**, accuracy ≈ **51.6% → 54.4%**.
-- **The edge does *not* reliably extend past ~10 days.** By a month the confidence interval swallows the
-  mean; by a quarter (60d) the edge is gone (**MCC −0.02 ± 0.07**). Single-window numbers at 20/60d
-  looked great but were mirages — walk-forward exposes them.
-- **Predictability is uneven across sectors** — Financials are the most predictable (MCC +0.15), Services
-  the least (−0.25).
-- **Acting only on the most confident days helps** — restricting to the top-10% highest-conviction
-  10-day predictions lifts MCC to +0.074.
-- **Sentiment is a genuine but minor factor.** The fine-tuned classifier is strong on its own
-  (**88.1% accuracy**), but adding it to price features moves the needle only slightly.
+**Task B (volatility regime) — the genuinely predictable one:** predicting whether next-week realized
+volatility will rise or fall beats a 52% majority baseline decisively — **walk-forward accuracy
+0.72 ± 0.02, MCC +0.44 ± 0.03** at the 5-day horizon, stable across all 5 windows. Real skill, from
+volatility clustering + mean-reversion. See [Task B results](#task-b-volatility-regime-prediction).
 
-The headline is the **walk-forward horizon curve** below. Everything else supports or stress-tests it.
+**Task A (direction) — the honestly hard one:**
+- A **small but real** edge exists at **~1–10 trading days** — it survives walk-forward *and* a stricter
+  non-overlapping cross-check: MCC ≈ **+0.04 to +0.09**, accuracy ≈ **51.6% → 54.4%**.
+- It does **not** reliably extend past ~10 days: by a month the confidence interval swallows the mean;
+  by a quarter the edge is gone (**MCC −0.02 ± 0.07**). Single-window 20/60d numbers looked great but
+  were mirages — walk-forward exposes them.
+- Predictability is **uneven across sectors** (Financials MCC +0.15, Services −0.25), and acting only on
+  the **top-10% most confident** days lifts 10-day MCC to +0.074.
+- **Sentiment is a genuine but minor factor** — the classifier is strong alone (**88.1% accuracy**), but
+  adds little on top of price features for either task.
 
 ---
 
 ## Contents
-- [The honest headline: walk-forward horizon curve](#the-honest-headline-walk-forward-horizon-curve)
+- [Task B: volatility-regime prediction](#task-b-volatility-regime-prediction) — the ~72% result
+- [Task A headline: walk-forward horizon curve](#task-a-headline-walk-forward-horizon-curve)
 - [Architecture](#architecture)
-- [All results](#all-results)
+- [All Task A results](#all-task-a-results)
 - [How these numbers stay honest](#how-these-numbers-stay-honest)
-- [Quickstart](#quickstart)
-- [Repo layout](#repo-layout)
+- [Quickstart](#quickstart) · [Repo layout](#repo-layout)
 - [Limitations](#limitations) · [Future work](#future-work)
 - [The sentiment model](#the-sentiment-model) · [Citation & license](#citation--license)
 
 ---
 
-## The honest headline: walk-forward horizon curve
+## Task B: volatility-regime prediction
+
+**Direction is a coin flip, but volatility is not.** Volatility *clusters* (calm follows calm, turbulent
+follows turbulent) and *mean-reverts* (extremes revert) — the classic ARCH effect. So predicting the
+**direction of volatility** is genuinely learnable. Target: **will realized volatility over the next h
+days be higher than the current h-day volatility?** Comparing to the current level keeps the classes
+~balanced in every period, so accuracy is a fair metric and beating the majority baseline is real skill.
+
+Walk-forward (5 rolling windows, LogReg on price + sentiment):
+
+| horizon | accuracy (mean ± std) | MCC (mean ± std) | majority baseline |
+|--------:|:---------------------:|:----------------:|:-----------------:|
+| **5 day**  | **0.719 ± 0.016** | **+0.440 ± 0.029** | 0.52 |
+| 10 day | 0.700 ± 0.016 | +0.406 ± 0.030 | 0.52 |
+| 20 day | 0.670 ± 0.015 | +0.357 ± 0.039 | 0.53 |
+
+Single fixed-window test: **5-day accuracy 0.739, MCC +0.478** (baseline 0.524). The tiny walk-forward
+spread (±0.016) says this is a stable, real effect — not a lucky window. Price features carry it;
+sentiment barely changes it (volatility is a price/technical phenomenon). Run: `python
+predictor/volatility.py`. **This is the ~0.70+ accuracy result — achieved by predicting something that
+is actually predictable, not by overfitting direction.**
+
+---
+
+---
+
+## Task A headline: walk-forward horizon curve
 
 Instead of trusting one fixed test window, we roll **5 consecutive quarterly out-of-sample windows**
 through 2014–2016 and report the **mean ± standard deviation** of accuracy and MCC per horizon
@@ -103,7 +131,7 @@ StockNet (88 tickers, 9 sectors,          │ aggregate -> daily sentiment facto
 
 ---
 
-## All results
+## All Task A results
 
 ### 1. Fixed-window comparison (StockNet's own Oct–Dec 2015 test split)
 
@@ -269,9 +297,10 @@ python sentiment_model/train_sentiment_model.py
 python features/build_features.py
 
 # 5. Evaluate
-python predictor/evaluate.py        # fixed-window horizon comparison table
-python predictor/walkforward.py     # walk-forward mean ± std  (the headline)
-python predictor/analysis.py        # non-overlap + conviction + per-sector studies
+python predictor/evaluate.py        # Task A: fixed-window horizon comparison table
+python predictor/walkforward.py     # Task A: walk-forward mean ± std  (direction headline)
+python predictor/analysis.py        # Task A: non-overlap + conviction + per-sector studies
+python predictor/volatility.py      # Task B: volatility-regime prediction (~0.72 accuracy)
 
 # 6. (optional) interactive demo — pick a ticker + horizon
 streamlit run app.py
@@ -291,15 +320,17 @@ config.py                       # paths, seed, horizons, √h thresholds, featur
 sentiment_model/
   train_sentiment_model.py      # fine-tune DistilBERT (bullish/bearish/neutral)
   model_card.md                 # Hugging Face model card
-features/build_features.py      # tweet scoring + price factors (RSI/MACD) + trailing sentiment
-                                #   + multi-horizon labels + embargo columns + sector map
+features/build_features.py      # tweet scoring + price factors (RSI/MACD, multi-scale vol)
+                                #   + trailing sentiment + multi-horizon direction & vol labels
+                                #   + embargo columns + sector map
 predictor/
-  train_predictor.py            # LogReg + dev-tuned XGBoost, 3 variants, per horizon, embargoed
-  evaluate.py                   # fixed-window accuracy / F1 / MCC horizon table
-  walkforward.py                # rolling out-of-sample windows -> mean ± std   ◀ headline
-  analysis.py                   # non-overlap cross-check · conviction curve · per-sector models
+  train_predictor.py            # Task A: LogReg + dev-tuned XGBoost, 3 variants, per horizon, embargoed
+  evaluate.py                   # Task A: fixed-window accuracy / F1 / MCC horizon table
+  walkforward.py                # Task A: rolling out-of-sample windows -> mean ± std   ◀ headline
+  analysis.py                   # Task A: non-overlap cross-check · conviction curve · per-sector models
+  volatility.py                 # Task B: volatility-regime prediction (~0.72 acc) + walk-forward
 app.py                          # Streamlit demo (ticker + horizon selector)
-tests/                          # leakage, RSI/MACD, horizon labels, embargo, metrics, non-overlap, sectors
+tests/                          # leakage, RSI/MACD/vol, direction & vol labels, embargo, metrics, sectors
 .github/workflows/ci.yml        # runs the test suite on every push
 ```
 

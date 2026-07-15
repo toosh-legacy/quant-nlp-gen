@@ -102,9 +102,9 @@ def test_rsi_and_macd_are_well_formed():
     )
 
 
-def test_rsi_macd_do_not_leak_future():
-    """RSI/MACD are EMA-based; confirm they too are causal — perturbing a future close leaves
-    earlier RSI/MACD values untouched."""
+def test_rsi_macd_vol_do_not_leak_future():
+    """RSI/MACD (EMA-based) and the multi-scale volatility features are all causal — perturbing
+    a future close leaves earlier values untouched."""
     prices = _synthetic_prices(n=120)
     base = compute_price_features(prices)
     perturb_i = 90
@@ -112,10 +112,26 @@ def test_rsi_macd_do_not_leak_future():
     p2.loc[perturb_i, ["adj_close", "close"]] += 30.0
     perturbed = compute_price_features(p2)
     earlier = slice(0, perturb_i)  # indices 0..perturb_i-1 must be unchanged
-    for col in ("rsi_14", "macd", "macd_signal", "macd_hist"):
+    for col in ("rsi_14", "macd", "macd_signal", "macd_hist",
+                "volatility_5d", "volatility_10d", "volatility_20d"):
         assert np.allclose(
             base[col].to_numpy()[earlier], perturbed[col].to_numpy()[earlier], equal_nan=True
         ), f"{col} leaked future data!"
+
+
+def test_forward_volatility_covers_the_next_h_days():
+    """The Task B label source fwd_vol_h(t) must equal the std of daily returns over days
+    t+1..t+h (a forward window) — that's what makes it a *label*, not a feature."""
+    prices = _synthetic_prices(n=80)
+    feats = compute_price_features(prices)
+    ret = prices["adj_close"].pct_change(1)
+    for h in config.VOL_HORIZONS:
+        col = feats[config.fwd_vol_col(h)].to_numpy()
+        for i in range(len(prices) - h - 1):
+            if np.isnan(col[i]):
+                continue
+            expected = ret.iloc[i + 1 : i + 1 + h].std()  # ddof=1, matches rolling().std()
+            assert np.isclose(col[i], expected), f"fwd_vol_{h} at {i} != future-window std"
 
 
 def test_sentiment_rolls_forward_never_backward():

@@ -148,8 +148,11 @@ def compute_price_features(prices: pd.DataFrame) -> pd.DataFrame:
     # Close relative to its own trailing moving averages (>1 = above trend).
     df["ma_5_ratio"] = px / px.rolling(5).mean()
     df["ma_10_ratio"] = px / px.rolling(10).mean()
-    # Rolling volatility of daily returns (risk regime).
+    # Rolling volatility of daily returns (risk regime) at several look-backs. The longer
+    # windows feed Task B (volatility-regime prediction); all are backward-looking.
     df["volatility_5d"] = df["return_1d"].rolling(5).std()
+    df["volatility_10d"] = df["return_1d"].rolling(10).std()
+    df["volatility_20d"] = df["return_1d"].rolling(20).std()
     # Volume change vs prior day.
     df["volume_change"] = df["volume"].pct_change(1)
 
@@ -180,6 +183,12 @@ def compute_price_features(prices: pd.DataFrame) -> pd.DataFrame:
         # Calendar date of the h-days-ahead close, used later to embargo rows whose outcome
         # window crosses a train/dev/test boundary.
         df[config.label_date_col(h)] = df["date"].shift(-h)
+
+    # --- Task B labels: realized volatility over the NEXT h trading days ---
+    # rolling(h).std() at day t+h covers returns[t+1 .. t+h]; shift(-h) brings it back to t.
+    # This looks forward on purpose (it is the target) and is binarized at train time.
+    for h in config.VOL_HORIZONS:
+        df[config.fwd_vol_col(h)] = df["return_1d"].rolling(h).std().shift(-h)
 
     return df
 

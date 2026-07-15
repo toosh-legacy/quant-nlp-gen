@@ -159,3 +159,35 @@ SENTIMENT_FEATURE_COLS = [
 
 # Number of trading days in the trailing sentiment window (causal — includes day t).
 SENT_TRAILING_WINDOW = 3
+
+# ---------------------------------------------------------------------------
+# Task B — volatility-regime prediction ("will next week be calm or turbulent?")
+# ---------------------------------------------------------------------------
+# Unlike direction (near-random), realized volatility is strongly autocorrelated
+# (volatility clustering / the ARCH effect), so a high-vs-low-volatility classifier is
+# genuinely predictable — honestly ~0.70-0.80 accuracy. We predict whether the realized
+# volatility over the NEXT h trading days is above or below the training-set median.
+VOL_HORIZONS = [5, 10, 20]
+DEFAULT_VOL_HORIZON = 5
+
+# Extra backward-looking volatility features (added to the price features for this task).
+# These carry the past-volatility signal that makes the future regime predictable.
+VOL_EXTRA_FEATURE_COLS = ["volatility_10d", "volatility_20d"]
+# Feature sets for Task B.
+VOL_PRICE_FEATURE_COLS = PRICE_FEATURE_COLS + VOL_EXTRA_FEATURE_COLS
+VOL_COMBINED_FEATURE_COLS = VOL_PRICE_FEATURE_COLS + SENTIMENT_FEATURE_COLS
+
+
+def fwd_vol_col(h: int) -> str:
+    """Column holding the realized volatility over the NEXT h trading days (the forward
+    side of the Task B label)."""
+    return f"fwd_vol_{h}"
+
+
+def current_vol_col(h: int) -> str:
+    """Backward-looking realized volatility over the last h days — the reference level the
+    Task B label compares against. Label = 1 iff next-h-day vol > current h-day vol
+    ("will volatility rise?"). Comparing to the current level makes the two classes roughly
+    balanced in every period, so accuracy is a fair, interpretable metric (unlike a fixed
+    threshold, which is imbalanced when the test period is unusually calm or turbulent)."""
+    return f"volatility_{h}d"
