@@ -113,7 +113,8 @@ def test_rsi_macd_vol_do_not_leak_future():
     perturbed = compute_price_features(p2)
     earlier = slice(0, perturb_i)  # indices 0..perturb_i-1 must be unchanged
     for col in ("rsi_14", "macd", "macd_signal", "macd_hist",
-                "volatility_5d", "volatility_10d", "volatility_20d"):
+                "volatility_5d", "volatility_10d", "volatility_20d",
+                "har_rv_d", "har_rv_w", "har_rv_m"):
         assert np.allclose(
             base[col].to_numpy()[earlier], perturbed[col].to_numpy()[earlier], equal_nan=True
         ), f"{col} leaked future data!"

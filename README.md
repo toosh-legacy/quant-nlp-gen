@@ -60,19 +60,39 @@ follows turbulent) and *mean-reverts* (extremes revert) — the classic ARCH eff
 days be higher than the current h-day volatility?** Comparing to the current level keeps the classes
 ~balanced in every period, so accuracy is a fair metric and beating the majority baseline is real skill.
 
-Walk-forward (5 rolling windows, LogReg on price + sentiment):
+Features include **HAR-RV** components (Corsi 2009) — realized volatility over daily/weekly/monthly
+look-backs, the gold-standard volatility predictors.
+
+**B1 — Direction of volatility (classification).** Walk-forward (5 windows, LogReg on price + sentiment):
 
 | horizon | accuracy (mean ± std) | MCC (mean ± std) | majority baseline |
 |--------:|:---------------------:|:----------------:|:-----------------:|
-| **5 day**  | **0.719 ± 0.016** | **+0.440 ± 0.029** | 0.52 |
-| 10 day | 0.700 ± 0.016 | +0.406 ± 0.030 | 0.52 |
-| 20 day | 0.670 ± 0.015 | +0.357 ± 0.039 | 0.53 |
+| **5 day**  | **0.722 ± 0.017** | **+0.445 ± 0.031** | 0.52 |
+| 10 day | 0.704 ± 0.019 | +0.413 ± 0.037 | 0.52 |
+| 20 day | 0.673 ± 0.016 | +0.360 ± 0.038 | 0.53 |
 
-Single fixed-window test: **5-day accuracy 0.739, MCC +0.478** (baseline 0.524). The tiny walk-forward
-spread (±0.016) says this is a stable, real effect — not a lucky window. Price features carry it;
-sentiment barely changes it (volatility is a price/technical phenomenon). Run: `python
-predictor/volatility.py`. **This is the ~0.70+ accuracy result — achieved by predicting something that
-is actually predictable, not by overfitting direction.**
+Single fixed-window test: **5-day accuracy 0.741, MCC +0.481** (baseline 0.524). The tiny walk-forward
+spread (±0.017) says this is a stable, real effect — not a lucky window.
+
+**B2 — Volatility magnitude (regression).** Predict the *actual* next-h-day realized-volatility level;
+report **R²** (fraction of variance explained). A model only shows skill by beating the **persistence**
+baseline ("next vol = current vol"). Fixed-window test R²:
+
+| horizon | persistence | HAR-OLS | Ridge (all) | **XGBoost** |
+|--------:|:-----------:|:-------:|:-----------:|:-----------:|
+| 5 day  | −0.52 | 0.12 | 0.14 | **0.17** |
+| 10 day | −0.27 | 0.18 | 0.18 | **0.21** |
+| 20 day | +0.12 | 0.21 | 0.22 | **0.27** |
+
+Two honest findings: (1) **naive persistence fails at short horizons** (negative R² — short-window vol is
+noisy and mean-reverts, so "tomorrow = today" is worse than guessing the mean); (2) the HAR-based models
+**clearly beat it** (walk-forward R² ≈ 0.11), so the multi-scale HAR features carry real signal. R² tops
+out around 0.27 rather than 0.5 mainly because we only have *daily* data — intraday returns would give
+much cleaner realized-volatility estimates (see [Future work](#future-work)).
+
+Price features carry both results; sentiment barely changes them (volatility is a price/technical
+phenomenon). Run: `python predictor/volatility.py`. **This is the ~0.70+ accuracy result — achieved by
+predicting something that is actually predictable, not by overfitting direction.**
 
 ---
 
@@ -348,6 +368,9 @@ tests/                          # leakage, RSI/MACD/vol, direction & vol labels,
   a tradeable strategy.
 
 ## Future work
+- **Intraday data for Task B** — realized volatility from 5-minute returns is far less noisy than from
+  daily returns, and would likely lift the magnitude-regression R² from ~0.2 toward 0.4–0.6.
+- **Implied volatility (VIX / options) as a feature** — highly predictive of future realized vol.
 - **Non-overlapping weekly bars as the primary label** (not just a cross-check) for a cleaner long-horizon read.
 - **Stronger sentiment factor** — fine-tune `roberta-base`/FinBERT, or aggregate sentiment over longer trailing windows.
 - **Probability calibration that survives regime shift** (e.g. calibrate on a rolling recent window).

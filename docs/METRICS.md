@@ -116,6 +116,22 @@ direction result, restricting to the top-10% most confident days lifted MCC from
 "how selective are you?" knob; there's a trade-off between being selective (higher accuracy) and having
 enough opportunities (coverage).
 
+### Regression metrics: R² and RMSE (Task B magnitude)
+Task B also has a **regression** version — predict the *actual* volatility level (a number), not just
+up/down. Regression needs different metrics:
+- **RMSE** (root mean squared error) = `√(mean((prediction − truth)²))` — the typical error, in the same
+  units as the target. **Lower is better.** Good for "how far off am I," bad for comparing across
+  different targets (units differ).
+- **R²** (coefficient of determination) = the fraction of the target's variance the model explains.
+  `R² = 1 − (model's squared error) / (squared error of just predicting the mean)`.
+  - **R² = 1** perfect · **R² = 0** no better than always guessing the average · **R² < 0** *worse* than
+    guessing the average (yes, it can go negative — that's how we caught the persistence baseline failing).
+  - **Good value here:** volatility R² of **0.15–0.27** with daily data is a real, useful signal; 0.4–0.6
+    is achievable with intraday data. (Context matters — 0.2 is respectable for noisy financial targets.)
+- **Persistence baseline** (regression's version of the majority baseline): predict "next = current."
+  The model must beat it to show skill — and at short horizons ours *doesn't* just copy the present, it
+  genuinely improves on it. **In code:** `r2_score`, `mean_squared_error` in `predictor/volatility.py`.
+
 ### Brier score & calibration
 **Calibration** asks: when the model says "70% chance", does it actually happen ~70% of the time?
 A well-calibrated model's probabilities mean what they say.
@@ -211,6 +227,8 @@ Same metrics as above, just three classes instead of two.
 | **Recall** | 0–1 | of real 1s, how many caught | context-dependent | predicting 1 always |
 | **macro-F1** | 0–1 | balance of P & R, both classes | ~0.55 (dir), ~0.70 (vol) | less than accuracy is |
 | **MCC** ⭐ | −1…+1 | skill beyond chance | +0.04–0.12 (dir), ~0.40 (vol) | almost nothing |
+| **RMSE** | 0→ | typical regression error (lower=better) | small; compare within a target | scale differences |
+| **R²** | ≤1 | variance explained (regression) | 0.15–0.27 (vol, daily data) | — |
 | **Brier** | 0–1 | probability calibration (lower=better) | <0.25 | — |
 | **Coverage** | 0–1 | fraction of days acted on | trade-off vs accuracy | — |
 | **mean ± std** | — | value ± window-to-window wobble | mean ≫ std = real | one lucky window |

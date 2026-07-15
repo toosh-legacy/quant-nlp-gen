@@ -153,6 +153,14 @@ def compute_price_features(prices: pd.DataFrame) -> pd.DataFrame:
     df["volatility_5d"] = df["return_1d"].rolling(5).std()
     df["volatility_10d"] = df["return_1d"].rolling(10).std()
     df["volatility_20d"] = df["return_1d"].rolling(20).std()
+
+    # HAR-RV components (Corsi 2009): realized volatility over daily / weekly / monthly
+    # look-backs, as sqrt(mean squared return). Backward-looking (uses only past returns).
+    r2 = df["return_1d"] ** 2
+    df["har_rv_d"] = df["return_1d"].abs()               # daily realized vol proxy
+    df["har_rv_w"] = np.sqrt(r2.rolling(5).mean())       # weekly
+    df["har_rv_m"] = np.sqrt(r2.rolling(22).mean())      # monthly
+
     # Volume change vs prior day.
     df["volume_change"] = df["volume"].pct_change(1)
 

@@ -173,8 +173,16 @@ DEFAULT_VOL_HORIZON = 5
 # Extra backward-looking volatility features (added to the price features for this task).
 # These carry the past-volatility signal that makes the future regime predictable.
 VOL_EXTRA_FEATURE_COLS = ["volatility_10d", "volatility_20d"]
+
+# HAR-RV features (Corsi 2009, "Heterogeneous AutoRegressive" realized volatility). The
+# gold-standard volatility predictors: realized volatility measured over a DAILY, WEEKLY,
+# and MONTHLY look-back. Traders at different frequencies react to vol on different scales,
+# so these three components together forecast future vol remarkably well — often beating
+# fancier models. All are backward-looking (past squared returns).
+HAR_FEATURE_COLS = ["har_rv_d", "har_rv_w", "har_rv_m"]
+
 # Feature sets for Task B.
-VOL_PRICE_FEATURE_COLS = PRICE_FEATURE_COLS + VOL_EXTRA_FEATURE_COLS
+VOL_PRICE_FEATURE_COLS = PRICE_FEATURE_COLS + VOL_EXTRA_FEATURE_COLS + HAR_FEATURE_COLS
 VOL_COMBINED_FEATURE_COLS = VOL_PRICE_FEATURE_COLS + SENTIMENT_FEATURE_COLS
 
 

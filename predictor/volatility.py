@@ -139,9 +139,107 @@ def walk_forward(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
+# ---------------------------------------------------------------------------
+# Regression — predict the actual volatility LEVEL (magnitude), not just direction
+# ---------------------------------------------------------------------------
+def _reg_frame(df: pd.DataFrame, h: int) -> pd.DataFrame:
+    """Embargoed rows for the volatility-magnitude regression at horizon h. Target `yv` is
+    the continuous next-h-day realized volatility (config.fwd_vol_col(h))."""
+    fv, cur = config.fwd_vol_col(h), config.current_vol_col(h)
+    ok = df[fv].notna() & df[cur].notna()
+    same_split = df["split"] == df[config.label_split_col(h)]
+    is_test = df["split"] == "test"
+    frame = df[ok & (same_split | is_test)].copy()
+    frame = frame.dropna(subset=config.VOL_PRICE_FEATURE_COLS)
+    frame["yv"] = frame[fv]
+    return frame.reset_index(drop=True)
+
+
+def _reg_scores(y_true, y_pred) -> dict[str, float]:
+    from sklearn.metrics import mean_squared_error, r2_score
+
+    return {"r2": float(r2_score(y_true, y_pred)),
+            "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred)))}
+
+
+def regression_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Predict the volatility magnitude. Report R^2 / RMSE for:
+      * persistence baseline  — predict next vol = current vol (a strong, standard baseline),
+      * HAR-OLS               — Ridge on just the 3 HAR-RV components (the classic model),
+      * Ridge (all features)  — linear model on the full volatility feature set,
+      * XGBoost regressor.
+    A model only shows skill if it beats persistence.
+    """
+    from sklearn.linear_model import Ridge
+    from sklearn.preprocessing import StandardScaler
+    from xgboost import XGBRegressor
+
+    cols = config.VOL_COMBINED_FEATURE_COLS
+    rows = []
+    for h in config.VOL_HORIZONS:
+        frame = _reg_frame(df, h)
+        train, test = split_frame(frame, "train"), split_frame(frame, "test")
+        y_tr, y_te = train["yv"].to_numpy(), test["yv"].to_numpy()
+        cur = config.current_vol_col(h)
+
+        # Persistence baseline: next vol ≈ current vol (no fitting).
+        rows.append({"horizon": h, "model": "persistence(current vol)", **_reg_scores(y_te, test[cur].to_numpy())})
+
+        # HAR-OLS: Ridge on the three HAR components only.
+        sc_h = StandardScaler().fit(train[config.HAR_FEATURE_COLS].to_numpy(float))
+        har = Ridge().fit(sc_h.transform(train[config.HAR_FEATURE_COLS].to_numpy(float)), y_tr)
+        rows.append({"horizon": h, "model": "HAR-OLS", **_reg_scores(
+            y_te, har.predict(sc_h.transform(test[config.HAR_FEATURE_COLS].to_numpy(float))))})
+
+        # Ridge on all volatility features.
+        sc = StandardScaler().fit(train[cols].to_numpy(float))
+        ridge = Ridge().fit(sc.transform(train[cols].to_numpy(float)), y_tr)
+        rows.append({"horizon": h, "model": "ridge(all features)", **_reg_scores(
+            y_te, ridge.predict(sc.transform(test[cols].to_numpy(float))))})
+
+        # XGBoost regressor.
+        xgb = XGBRegressor(n_estimators=400, max_depth=3, learning_rate=0.05,
+                           subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0,
+                           random_state=config.RANDOM_SEED, n_jobs=-1, tree_method="hist")
+        xgb.fit(train[cols].to_numpy(float), y_tr)
+        rows.append({"horizon": h, "model": "xgboost", **_reg_scores(y_te, xgb.predict(test[cols].to_numpy(float)))})
+    return pd.DataFrame(rows)
+
+
+def regression_walk_forward(df: pd.DataFrame) -> pd.DataFrame:
+    """Walk-forward R^2 (Ridge on all features) — mean +/- std per horizon."""
+    from sklearn.linear_model import Ridge
+    from sklearn.preprocessing import StandardScaler
+
+    cols = config.VOL_COMBINED_FEATURE_COLS
+    per_fold = []
+    for h in config.VOL_HORIZONS:
+        fv, cur = config.fwd_vol_col(h), config.current_vol_col(h)
+        ld = config.label_date_col(h)
+        for ts_str in FOLD_STARTS:
+            ts = pd.Timestamp(ts_str)
+            te = ts + FOLD_LENGTH
+            ok = df[fv].notna() & df[cur].notna() & df[cols].notna().all(axis=1)
+            train = df[ok & (df["date"] < ts) & (df[ld] < ts)]
+            test = df[ok & (df["date"] >= ts) & (df["date"] < te)]
+            if len(train) < 200 or len(test) < 30:
+                continue
+            sc = StandardScaler().fit(train[cols].to_numpy(float))
+            r = Ridge().fit(sc.transform(train[cols].to_numpy(float)), train[fv].to_numpy())
+            s = _reg_scores(test[fv].to_numpy(), r.predict(sc.transform(test[cols].to_numpy(float))))
+            per_fold.append({"horizon": h, **s})
+    pf = pd.DataFrame(per_fold)
+    out = []
+    for h in config.VOL_HORIZONS:
+        sub = pf[pf["horizon"] == h]
+        out.append({"horizon": h, "n_folds": len(sub),
+                    "r2_mean": sub["r2"].mean(), "r2_std": sub["r2"].std(ddof=0)})
+    return pd.DataFrame(out)
+
+
 def _fmt(df: pd.DataFrame) -> str:
     show = df.copy()
-    for c in ("baseline", "accuracy", "f1_macro", "mcc"):
+    for c in ("baseline", "accuracy", "f1_macro", "mcc", "r2", "rmse"):
         if c in show.columns:
             show[c] = show[c].map(lambda v: f"{v:.4f}")
     return show.to_string(index=False)
@@ -156,17 +254,29 @@ def main() -> None:
     table = fixed_window_table(df)
     print(_fmt(table[["horizon", "features", "model", "baseline", "accuracy", "f1_macro", "mcc"]]))
 
-    print("\n=== Task B: walk-forward (LogReg/combined) — mean +/- std per horizon ===")
+    print("\n=== Task B: classification walk-forward (LogReg/combined) — mean +/- std ===")
     wf = walk_forward(df)
     for _, r in wf.iterrows():
         print(f"  h={int(r['horizon']):>2}  ({int(r['n_folds'])} folds):  "
               f"accuracy {r['acc_mean']:.3f} +/- {r['acc_std']:.3f}   "
               f"MCC {r['mcc_mean']:+.3f} +/- {r['mcc_std']:.3f}")
 
+    print("\n=== Task B (regression): predict the volatility MAGNITUDE — R^2 / RMSE ===")
+    print("(R^2 = fraction of variance explained; a model shows skill only by beating "
+          "'persistence')")
+    reg = regression_table(df)
+    print(_fmt(reg[["horizon", "model", "r2", "rmse"]]))
+
+    print("\n=== Task B (regression) walk-forward (Ridge/all) — R^2 mean +/- std ===")
+    rwf = regression_walk_forward(df)
+    for _, r in rwf.iterrows():
+        print(f"  h={int(r['horizon']):>2}  ({int(r['n_folds'])} folds):  "
+              f"R^2 {r['r2_mean']:.3f} +/- {r['r2_std']:.3f}")
+
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    out = config.DATA_DIR / "volatility_results.csv"
-    table.to_csv(out, index=False)
-    print(f"\nWrote volatility results -> {out}")
+    table.to_csv(config.DATA_DIR / "volatility_results.csv", index=False)
+    reg.to_csv(config.DATA_DIR / "volatility_regression_results.csv", index=False)
+    print(f"\nWrote volatility results -> {config.DATA_DIR / 'volatility_results.csv'}")
 
 
 if __name__ == "__main__":
