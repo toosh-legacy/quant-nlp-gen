@@ -1,142 +1,192 @@
-# Financial Sentiment & Market Signal Analysis
+# Volatility Radar
 
-A CPU-only **quant + NLP** study on the **StockNet** benchmark (Xu & Cohen, ACL 2018) and a large
-2005–2024 stock universe. It asks two questions honestly — *can you predict a stock's **direction**?*
-and *can you predict its **volatility**?* — and is rigorous about the difference.
+Forecasts how much the **market** and each of the **eleven S&P sectors** will move over the
+next 5–10 trading days, and ships the track record that qualifies every number.
 
-> **The whole point is honest measurement.** Stock *direction* is near-random (~54%); *volatility* is
-> genuinely predictable (R² ≈ 0.42). Knowing which is which — and **proving** it — is the deliverable.
-
----
-
-## TL;DR
-
-- 📉 **Direction is near-random.** A real but tiny edge at 1–10 days (MCC ≈ +0.07–0.09, ~52–54% accuracy), gone within a month. Nothing hits the mythical 0.80 on daily/weekly direction — that's leakage, not skill.
-- 📊 **Volatility is predictable.** Forecasting log realized volatility reaches **R² ≈ 0.42** out-of-sample (positive in all 10 walk-forward years); "will volatility rise?" hits **72% accuracy / MCC 0.45**.
-- 💬 **Sentiment model:** DistilBERT fine-tuned on financial tweets → **88% accuracy** — a strong standalone NLP module (only a minor factor for prediction).
-- 🔎 **Better data > fancier models.** The volatility R² roughly *doubled* by improving the **data and features** (bigger universe, log target, cross-sectional + range-based estimators), not the algorithm.
-- 🚗 **Breadth > depth (Tesla deep dive).** Going deep on *one* stock with real intraday data did **not** beat the broad multi-stock data: single-stock volatility R² fell to ~half (the universe's edge was cross-sectional), direction stayed near-random. Honest negative, kept — see [`docs/TESLA.md`](docs/TESLA.md).
-
----
-
-## What we built
-
-| task | what it does | result |
-|---|---|---|
-| **Sentiment (NLP)** | Fine-tune DistilBERT to tag tweets bullish / bearish / neutral | **88.1%** acc · 0.85 macro-F1 |
-| **Direction** | Predict up/down over 1–60 days from price + sentiment factors | honest ~54%, MCC ≤ 0.09 |
-| **Volatility** | Predict next-week vol regime + magnitude on 80 stocks, 2005–2024 | **R² ≈ 0.42**, 72% up/down |
-
----
-
-## Results
-
-### 📊 Volatility — the strong result · `predictor/volatility_universe.py`
-Predicting **log realized volatility** on ~80 large-caps, 2005–2024 (~380k ticker-days), with
-cross-sectional and range-based (**Garman-Klass**) features. R² = fraction of variance explained.
-
-| horizon | persistence (baseline) | HAR-OLS | **XGBoost (tuned)** |
-|--------:|:----------------------:|:-------:|:-------------------:|
-| 5 day  | −0.08 | 0.30 | **0.37** |
-| 10 day |  0.08 | 0.35 | **0.42** |
-| 21 day |  0.13 | 0.35 | **0.41** |
-
-*Out-of-sample (test 2018–2024). Walk-forward (10 yearly folds): R² **0.29 / 0.34 / 0.36**, positive every
-year. "Will vol rise?" classification: **72% accuracy, MCC 0.45**.*
-
-### 📉 Direction — the honest result · `predictor/walkforward.py`
-Walk-forward across 5 windows; MCC (−1…1) by horizon. Read *mean vs its own std*:
-
-| horizon | MCC (mean ± std) | verdict |
-|--------:|:----------------:|---------|
-| 5 day  | +0.068 ± 0.021 | ✅ small, real edge |
-| 10 day | +0.088 ± 0.030 | ✅ edge holds |
-| 20 day | +0.079 ± 0.093 | ⚠️ indistinguishable from 0 |
-| 60 day | −0.023 ± 0.074 | ❌ no edge |
-
-*Predictability rises to ~2 weeks, then drowns in noise. ~52–54% accuracy — exactly where the
-efficient-market literature says it should be.*
-
-### 💬 Sentiment classifier · `sentiment_model/`
-DistilBERT fine-tuned on `zeroshot/twitter-financial-news-sentiment`: **88.1% accuracy, 0.846 macro-F1**
-on held-out validation. (Hugging Face upload optional — see the model card.)
-
-### 🚗 Tesla single-stock deep dive · `tesla/` · [`docs/TESLA.md`](docs/TESLA.md)
-A companion that asks: does going **deep on one stock** (TSLA) with genuine **intraday** data
-(yfinance hourly realized vol) beat the broad, shallow multi-stock data? **Honest answer: no.**
-Direction stays near-random (MCC ≈ 0, *wider* CIs than the 88-stock run); volatility R² falls to
-**~half** the universe's (its 0.42 was mostly *cross-sectional* — which stock is volatile — and one
-stock can't provide that); only "will vol rise?" holds up (**73% / MCC 0.47**, matching the
-universe, since clustering is per-stock). Intraday granularity helped the *target's* cleanliness at
-long horizons but intraday *features* didn't beat daily HAR. **Breadth of data beat depth** — a
-negative result, kept. (No API key: yfinance replaces Alpha Vantage; public Musk-tweet dataset +
-our DistilBERT for sentiment.)
-
----
-
-## How we kept it honest (methodology)
-
-- **Chronological splits** — always train on the past, test on the future; never shuffle days.
-- **No lookahead** — every feature uses only data up to its own day; enforced by a test that perturbs a *future* price and asserts no past feature changes.
-- **Overlapping-window embargo** — drop rows whose multi-day outcome window crosses a split boundary (purging), so a training label never overlaps the test period.
-- **Walk-forward confidence intervals** — report mean ± std across windows, so a real edge is distinguishable from a lucky one.
-- **Honest baselines + MCC** — every number sits next to a majority/persistence baseline, and we report MCC (not just accuracy) so class imbalance can't fake skill.
-- **Negative results kept** — VIX added nothing, calibration failed under regime shift, the Reddit-news dataset was skipped. All documented, not hidden.
-
-New to any of these terms? **[`docs/METRICS.md`](docs/METRICS.md)** explains every metric in plain language.
-
----
-
-## Repo guide (what's where)
-
-```
-config.py                                  # single source of truth: paths, horizons, features, splits
-sentiment_model/train_sentiment_model.py   # fine-tune DistilBERT   ← the NLP module
-features/
-  build_features.py                        # StockNet: price/technical + sentiment + labels (Tasks A & B)
-  universe_data.py                         # download 80-stock 2005-2024 universe + vol features (Task B pro)
-predictor/
-  train_predictor.py · evaluate.py         # Task A: direction, fixed-window horizon table
-  walkforward.py                           # Task A: walk-forward CIs        ← direction headline
-  analysis.py                              # Task A: non-overlap · conviction · per-sector cross-checks
-  volatility.py                            # Task B: volatility regime on StockNet
-  volatility_universe.py                   # Task B pro: best vol forecaster ← volatility headline
-tesla/                                     # single-stock TSLA deep dive (intraday-enriched)
-  fetch_prices.py                          # yfinance daily + intraday (1h/5m/1m) + realized vol
-  kaggle_baseline.py · sentiment_features.py # public Musk-tweet baseline + DistilBERT sentiment
-  features.py                              # technical + HAR + range + intraday + sentiment table
-  direction.py · volatility.py · compare.py  # models + the honest three-way comparison
-app.py                                     # Streamlit demo (pick a ticker + horizon)
-docs/METRICS.md                            # plain-language guide to every metric
-docs/TESLA.md                              # the TSLA deep dive writeup + honest verdict
-tests/                                     # leakage · labels · embargo · metric correctness (26 tests)
-.github/workflows/ci.yml                   # runs the tests on every push
-```
-
----
-
-## Quickstart
+Not direction. Not returns. **Volatility** — because short-horizon direction is very close
+to unpredictable, while volatility is strongly persistent and genuinely forecastable.
 
 ```bash
-# Python 3.11, CPU only
-py -3.11 -m venv .venv && .venv/Scripts/activate          # Windows
-pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
-git clone https://github.com/yumoxu/stocknet-dataset data/stocknet-dataset
-
-python sentiment_model/train_sentiment_model.py   # fine-tune DistilBERT (~30 min CPU)
-python features/build_features.py                 # build StockNet features
-python predictor/walkforward.py                   # Task A: direction (honest)
-python predictor/volatility_universe.py           # Task B: volatility (the strong result)
-streamlit run app.py                              # optional interactive demo
-pytest -q                                          # 19 tests
+python -m volradar.cli all        # fetch, build, backtest, train  (~25 min, CPU only)
+cd frontend && npm install && npm run build
+python -m volradar.cli serve      # dashboard at http://127.0.0.1:8000
 ```
 
 ---
 
-## Limitations & disclaimer
-One benchmark era; **daily** data (intraday would push volatility R² higher); no transaction costs.
-Educational project — **not investment advice.** Datasets keep their own licenses (Twitter Financial
-News Sentiment: MIT; StockNet: see its repo).
+## Headline results
 
-> Yumo Xu and Shay B. Cohen. 2018. *Stock Movement Prediction from Tweets and Historical Prices.* ACL 2018.
+Pooled out-of-sample, **2012-01-03 → 2026-07-28**. A model is retrained at the start of each
+year on data available up to that point, then scored on the year that follows. No model was
+ever shown the data it is graded on.
+
+| | market (SPY) | sectors (11 ETFs) |
+|---|:---:|:---:|
+| out-of-sample days | 3,662 | 37,558 |
+| **R² (log realized vol)** | **0.421** | **0.479** |
+| persistence baseline R² | 0.111 | 0.208 |
+| **error removed vs baseline** | **35%** | **34%** |
+| rise/fall accuracy | **70.5%** (base 53.5%) | **70.4%** (base 51.0%) |
+| rise/fall MCC | 0.409 | 0.408 |
+| regime accuracy (3-class) | 64.7% (base 47.8%) | 66.4% (base 51.2%) |
+
+At the 5-day horizon: market R² **0.446**, MCC **0.464**; sectors R² **0.427**, MCC **0.450**.
+
+**Stability — the number that matters most.** Skill versus the persistence baseline, scored
+year by year so both sides face the same window:
+
+| panel · horizon | mean ± std | worst year | years positive |
+|---|:---:|:---:|:---:|
+| market · 5d | +0.403 ± 0.123 | +0.184 | **15 / 15** |
+| market · 10d | +0.354 ± 0.186 | +0.009 | **15 / 15** |
+| sector · 5d | +0.408 ± 0.058 | +0.231 | **15 / 15** |
+| sector · 10d | +0.351 ± 0.107 | +0.055 | **15 / 15** |
+
+Every sector individually beats persistence — skill 0.29–0.39, direction accuracy 68–72%
+across all eleven. No sector is carried by the others.
+
+---
+
+## What did not work
+
+These are results, not caveats, and they are as load-bearing as the table above.
+
+**No external factor family earned its place.** The VIX complex (level, term structure,
+vol-of-vol, variance risk premium), cross-sectional dispersion and average correlation
+across 80 large caps, rates/credit/dollar, and sector dispersion were all built and tested.
+Every combination landed **within one standard error** of using the series' own price
+history alone, across six pre-test selection folds — so the one-standard-error rule keeps
+the simplest model. Realized volatility turns out to be a remarkably complete summary of a
+market's own risk state, and the signals that look independent are largely reflections of
+it. All four families remain implemented and are re-tested on every run.
+
+**The 21-day horizon is not shipped.** It was built and measured, but in walk-forward it beat
+persistence in only **12 of 15** years for the market panel, with a −1.29 miss in an
+ultra-calm year. Every model tested — including plain HAR — extrapolates a volatility floor
+that very quiet years fall through. The measurement is kept in the reports; the number is not
+served.
+
+**It is not a crash predictor.** At the pre-registered alarm threshold it warned ahead of only
+**4 of 15** stress episodes (27%), median lead 42 trading days, false-alarm rate 31%. COVID-19
+and the 2024 yen carry unwind were exogenous — nothing in market data foreshadowed them. There
+is also a structural cause: a squared-error model shrinks predictions toward the mean, so the
+forecast rarely reaches the stressed band until a spike is already forming. Rather than
+re-picking a flattering threshold, the **full tradeoff curve** is published:
+
+| alarm at | detected | median lead | days on alarm | false alarms |
+|---:|---:|---:|---:|---:|
+| 70th pct | 87% | 39d | 30% | 60% |
+| 75th pct | 80% | 41d | 25% | 56% |
+| 85th pct | 47% | 51d | 15% | 42% |
+| 90th pct | 33% | 60d | 10% | 33% |
+
+**The trading benefit is not statistically established.** Volatility targeting at a 15% risk
+level, 1bp costs, out-of-sample:
+
+| sizing rule | return | vol | Sharpe | max drawdown |
+|---|---:|---:|---:|---:|
+| buy & hold | 14.9% | 16.6% | 0.90 | −33.7% |
+| sized on current vol | 14.6% | 17.1% | 0.85 | **−22.0%** |
+| **sized on forecast** | 15.3% | 16.8% | **0.91** | −26.5% |
+
+The forecast arm beats the persistence arm by **+0.046** Sharpe — but block-bootstrapping the
+paired daily returns (2,000 resamples, 21-day blocks to preserve volatility clustering) gives
+a 95% interval of **[−0.067, +0.156]**. It spans zero. So: the model forecasts the volatility
+*level* far more accurately than the baseline, and that accuracy did **not** convert into a
+reliable position-sizing edge on this evidence. Both facts are true and both are reported.
+
+---
+
+## What it's for
+
+Read it as a **gauge of current and near-term risk conditions**, which it measures well:
+
+- *Is the market about to get choppier?* — 70% accurate, out-of-sample, 15 years running.
+- *Which sectors are structurally calm right now?* — the ranking recovers the classic
+  defensive/cyclical ordering from data alone, with per-sector accuracy attached to each row.
+- *How much movement should I plan for?* — an annualized volatility number with frozen
+  calm/normal/stressed bands.
+
+Do **not** read it as a crash alarm or a trading signal. The evidence above says it is not
+reliably either.
+
+---
+
+## How it stays honest
+
+- **Chronological only** — train on the past, test on the future; days are never shuffled.
+- **No lookahead** — enforced behaviourally: a test perturbs a *future* bar and asserts no
+  *past* feature moves; a mirror test asserts the target *does* move, so a frozen target
+  can't masquerade as clean hygiene.
+- **Boundary embargo** — a 10-day label spans 10 days, so rows whose outcome window crosses a
+  split boundary are purged rather than leaked.
+- **Walk-forward** — 15 independent yearly out-of-sample windows, reported mean ± spread.
+- **Baselines everywhere** — persistence for levels, majority for classes. No score is
+  reported without the thing it must beat.
+- **Frozen regime bands** — calm/normal/stressed cut points come from training data only.
+- **Selection never sees the reporting window** — hyperparameters tuned on a validation slice
+  inside the training period; factor families chosen on folds strictly before the test start.
+- **Coverage guard** — a provider once silently returned 13 rows instead of 5,400 for a macro
+  series, nulling two features without raising. The fetcher now checks every series against
+  its peers, retries short ones, and warns loudly.
+
+Full definitions: [`docs/METRICS.md`](docs/METRICS.md). Layout and design rationale:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+---
+
+## Dashboard
+
+Three tabs. **Dashboard** — market forecast with its regime meter, the exact per-feature
+contributions driving it (in annualized-vol points, not unitless scores), the sector
+stability ranking, and forecast-vs-realized history. **Track record** — everything on this
+page, including the failures. **Method** — what is being predicted and what is not.
+
+The API reads generated artifacts and computes nothing, so the dashboard physically cannot
+display a figure that disagrees with the backtest. A missing report returns a 503 telling you
+which command to run, never an improvised default.
+
+---
+
+## Pipeline
+
+```
+python -m volradar.cli fetch      # download raw series (network)
+python -m volradar.cli build      # assemble market + sector panels
+python -m volradar.cli evaluate   # fixed split, pooled OOS, walk-forward, per-sector
+python -m volradar.cli ablation   # what each factor family is worth
+python -m volradar.cli events     # did it flag real volatility spikes?
+python -m volradar.cli decision   # would acting on it have helped?
+python -m volradar.cli train      # production fit + dashboard snapshot
+python -m volradar.cli all        # all of the above
+python -m volradar.cli serve      # API + dashboard
+```
+
+Every stage caches and is idempotent; `--force` rebuilds one from scratch. To refresh the
+dashboard to the latest close without re-running the backtest:
+`fetch --force && build --force && train`.
+
+**Tests:** `pytest -q` — 27 tests covering causality, embargo, split boundaries, metric
+correctness against hand-computed values, and the API contract.
+
+**Data:** Yahoo Finance via `yfinance` — free, no API key. Prices 2005 → today.
+
+---
+
+## Also here
+
+`volradar/sentiment/` holds a DistilBERT financial-sentiment classifier (88% accuracy,
+0.85 macro-F1) fine-tuned in an earlier phase of this project. It is **not** a model input,
+and the reason is documented in `headlines.py`: free headline sources provide days of
+history, not years, so news tone cannot be walk-forward validated over a 2012–2026 window.
+Back-filling it from today's articles would leak the future into the past. It ships as an
+optional descriptive overlay, clearly labelled unvalidated.
+
+The prior research phase — stock *direction* prediction (near-random, MCC ≤ 0.09) and a
+single-stock Tesla deep dive — is preserved at tag `v1-research-archive`.
+
+---
+
+Educational research project. **Not investment advice.** Forecasts are of volatility, never
+of direction.

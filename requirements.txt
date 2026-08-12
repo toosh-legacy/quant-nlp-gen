@@ -1,24 +1,25 @@
-# Core dependencies for the Financial Sentiment & Market Signal project.
-# CPU-only. Versions pinned from a verified working install (Python 3.11).
+# Volatility Radar — CPU-only, Python 3.11.
 #
-# torch is the CPU build. Install it from the PyTorch CPU wheel index so pip does not
-# pull CUDA wheels:
-#   pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
-# then install the rest normally:
+#   python -m venv .venv && .venv/Scripts/activate     # Windows
 #   pip install -r requirements.txt
 
-transformers==5.13.1
-accelerate==1.14.0
-datasets==5.0.0
-torch==2.13.0
-scikit-learn==1.9.0
-xgboost==3.2.0
+# --- data & modelling ---
 pandas==3.0.3
 numpy==2.4.6
 pyarrow==24.0.0
-streamlit==1.59.2
-yfinance==1.5.1              # Task B (pro): downloads the 2005-2024 universe + VIX
+scikit-learn==1.9.0
+xgboost==3.2.0
+yfinance==1.5.1              # all price, VIX and macro series (free, no API key)
 
-# Dev / tooling
+# --- API ---
+fastapi==0.141.1
+uvicorn[standard]==0.51.0
+
+# --- optional: the sentiment module (volradar/sentiment/) ---
+# Not needed to run the forecaster. Install only if fine-tuning or scoring headlines.
+# Install torch from the CPU wheel index first so pip does not pull CUDA builds:
+#   pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-sentiment.txt
+
+# --- dev ---
 pytest==9.1.1
-huggingface_hub

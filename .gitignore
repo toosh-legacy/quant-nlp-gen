@@ -1,5 +1,10 @@
+# Data, model artifacts and generated reports are all reproducible from the pipeline.
+data/
+
+# Personal notes from the earlier research phase; superseded by docs/METRICS.md.
 LEARNING_GUIDE.md
 
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -10,20 +15,20 @@ venv/
 .coverage
 htmlcov/
 
+# Frontend
+node_modules/
+frontend/dist/
+*.local
+
+# Secrets
 .env
 .env.*
 !.env.example
 *.pem
 credentials.json
 
+# Editors / OS
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
-
-data/
-archive/            # locally-downloaded external datasets (e.g. the Reddit-news/DJIA CSVs)
-*.parquet
-*.csv
-*.pt
-*.bin
