@@ -156,6 +156,75 @@ def fit_harq(train, _features, h: int) -> Fitted:
                       scaler=sc, params={"rq_mu": mu, "rq_sd": sd})
 
 
+def qlike_objective(y_true: np.ndarray, y_pred: np.ndarray):
+    """Custom XGBoost objective: train directly on QLIKE instead of squared error.
+
+    On log daily volatility, QLIKE is  L(y, p) = 2p + exp(2(y - p)) , giving
+
+        dL/dp   = 2 - 2*exp(2(y - p))
+        d2L/dp2 = 4*exp(2(y - p))
+
+    Why bother: squared error is symmetric, so it is indifferent between forecasting 12%
+    when the truth is 20% and forecasting 28% when the truth is 20%. For a risk forecast
+    those errors are not equally bad, and the asymmetry is also the mechanism behind two of
+    this project's known weaknesses — forecasts shrink toward the mean, which makes stress
+    alarms fire late and flattens the exposure signal that the volatility-targeting
+    simulation needs. QLIKE punishes under-forecasting harder, so the fitted model leans
+    the other way.
+
+    Two numerical guards, both necessary — without them this objective diverges instead of
+    training, which is exactly what it did on the first attempt (final loss ~5e8):
+
+    * the exponent is clipped, so one wild residual cannot produce an enormous gradient;
+    * **the Hessian is floored.** As the prediction rises above the truth the Hessian decays
+      to zero, and boosting's step is grad/hess, so a vanishing Hessian produces an
+      unbounded step and the fit runs away. Flooring it caps the step size.
+
+    The starting point matters too, and is handled by the caller: log daily volatility sits
+    near -4, while XGBoost's default base score is 0.5, so an unset base score starts the
+    optimisation deep in the exponential's stiff region.
+    """
+    d = np.clip(2.0 * (y_true - y_pred), -6.0, 6.0)
+    e = np.exp(d)
+    grad = 2.0 - 2.0 * e
+    hess = np.maximum(4.0 * e, 0.5)
+    return grad, hess
+
+
+def fit_gbm_qlike(train, features, h: int, params: dict | None = None) -> Fitted:
+    """GBM trained on the QLIKE objective, started at the target's own mean."""
+    from xgboost import XGBRegressor
+
+    p = dict(params or GBM_DEFAULT)
+    y = train[config.fwd_col(h)].to_numpy(float)
+    est = XGBRegressor(**GBM_FIXED, **p, objective=qlike_objective,
+                       base_score=float(np.mean(y)))
+    est.fit(train[features].to_numpy(float), y)
+    return Fitted(name="gbm-qlike", columns=list(features), estimator=est, params=p)
+
+
+def fit_gbm_quantile(train, features, h: int, params: dict | None = None,
+                     alpha: float = 0.6) -> Fitted:
+    """GBM fitted to a conditional QUANTILE of log volatility rather than its mean.
+
+    A squared-error model targets the conditional mean, and the conditional mean of a
+    right-skewed variable sits below the outcomes that matter for risk. Forecasting the
+    60th or 70th percentile instead deliberately biases the forecast upward, which is the
+    direction a risk user wants to be wrong in.
+
+    Scored on R² this will look *worse* by construction — it is not estimating the mean —
+    so it is judged on QLIKE and on whether it detects stress episodes earlier.
+    """
+    from xgboost import XGBRegressor
+
+    p = dict(params or GBM_DEFAULT)
+    est = XGBRegressor(**GBM_FIXED, **p, objective="reg:quantileerror",
+                       quantile_alpha=alpha)
+    est.fit(train[features].to_numpy(float), train[config.fwd_col(h)].to_numpy(float))
+    return Fitted(name=f"gbm-q{int(alpha * 100)}", columns=list(features), estimator=est,
+                  params={**p, "alpha": alpha})
+
+
 SHAR_COLS = ["log_rs_down_m", "log_rs_up_m", "log_rv_w", "log_rv_m", "log_rv_q"]
 
 

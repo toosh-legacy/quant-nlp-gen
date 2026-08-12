@@ -6,7 +6,9 @@ How the pipeline is laid out, and why each boundary is where it is.
 volradar/
   config.py              single source of truth: tickers, horizons, split dates, selected families
   cli.py                 one entrypoint for every stage
-  data/fetch.py          download + cache raw series, with a coverage guard
+  data/
+    fetch.py             download + cache raw series, with a coverage guard
+    realized.py          Oxford-Man Realized Library (intraday measures, one cached file)
   features/
     core.py              per-series volatility features, jump block, forward targets
     factors.py           the four candidate external factor families
@@ -23,6 +25,8 @@ volradar/
     select_features.py   which factor families ship (decided pre-test)
     ablation.py          what each family is worth
     methods.py           methodology bake-off, paired against the incumbent
+    settle.py            decides open model questions on pre-test folds
+    intraday_study.py    is intraday data worth paying for? (scoped, 2000-2016)
     events.py            did it flag real volatility spikes?
     decision.py          would acting on it have helped?
   simulate/

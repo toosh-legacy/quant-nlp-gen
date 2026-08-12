@@ -108,6 +108,77 @@ payoff exists, and it is gated on forecast sharpness, not on the trading rule.
 
 ---
 
+## The three open questions, now settled
+
+All three were left explicitly open above. Each was decided under the rules already in
+force: pre-test folds only, paired against the incumbent, checked at two fold granularities.
+
+**1. Ridge vs GBM on the market panel — the GBM stays.** Ridge had beaten it in the fixed
+split and across the full walk-forward (t=+1.45), which looked like a problem. Re-tested on
+*pre-test* folds — the window selection is actually allowed to use — ridge is t=+0.68
+(annual) and t=+0.56 (semi-annual) on skill, and **worse** on QLIKE (t=−0.84, −2.23). The
+earlier signal came from measuring on the reporting window, which is the wrong window for
+choosing a model. Question closed, incumbent retained.
+
+**2. Training on QLIKE or a high quantile — neither adopted.** The motivation was real:
+squared error is symmetric, and the forecast's known failure modes (late alarms, flat
+exposure signal) are asymmetric. The first QLIKE implementation *diverged* to a loss of
+5×10⁸ — a genuine bug, since the Hessian decays to zero as the forecast rises above the
+truth and boosting's step is gradient/Hessian. With the Hessian floored and the base score
+started at the target mean, it trains properly and delivers a QLIKE gain of 0.003
+(t=+0.13) while costing 0.10 of skill. A 60th-percentile fit does clear the QLIKE bar on the
+sector panel (t=+2.04 and +2.22, both granularities) — but tested on the weakness it was
+built to fix, it detects **exactly the same 27%** of stress episodes, buying its longer lead
+purely with more alarm days (11.4% vs 9.8%) and more false alarms. That trade is already
+available by moving the alarm threshold on the existing model. **Mean-shrinkage is not the
+binding constraint on event detection; the exogeneity of shocks is.**
+
+**3. Intraday data — helps as an input, does not help as a target.** See below.
+
+## Does intraday data pay? A scoped study on 2000–2016 S&P 500
+
+Run on the **Oxford-Man Realized Library**: 5-minute and 10-minute realized variance,
+bipower variation, realized semivariance, realized kernels and median-truncated RV for 21
+indices, computed from tick data. One 16MB file, cached once, no API key and no rate limits.
+The Institute shut the library down and its domain no longer resolves, so this reads an
+archived copy from a public GitHub repository — a 2016 vintage. That is enough to answer the
+question but not to serve live forecasts, so it feeds a scoped study with its own
+walk-forward and never the production pipeline.
+
+| | R² | skill | direction |
+|---|---:|---:|---:|
+| daily features only | 0.123 | +0.169 | — |
+| **+ intraday features** | **0.191** | **+0.230** | — |
+
+Paired delta **+0.061, t=+1.68, ahead in 8 of 12 folds**. That is the largest effect any
+feature addition has produced in this project — larger than every external factor family
+combined — but it still does not clear the t>2 bar, and the bar does not move.
+
+**As a target, precision made things worse, which was the opposite of the prior:**
+
+| target | R² | direction |
+|---|---:|---:|
+| daily squared returns (close-to-close) | 0.191 | 0.717 |
+| 5-min RV + overnight (close-to-close) | 0.132 | 0.663 |
+| 5-min RV alone (open-to-close) | 0.139 | 0.658 |
+
+The comparison is like-for-like: 5-minute RV is an *open-to-close* measure and cannot see
+overnight gaps, so the overnight return was reconstructed from the open and prior close and
+added back before comparing.
+
+The explanation is quantitative and the simulation confirms it independently. Our target is
+a **10-day average** of daily variances, and averaging ten noisy estimates already removes
+most of the measurement noise — the simulated perfect forecaster scores 0.887 against it, so
+it is ~89% clean before any intraday data is involved. Intraday precision pays at a **1-day**
+horizon, which is where the literature reports it. At ten days, temporal averaging has
+already done that job.
+
+**Practical conclusion: buying intraday data is not justified for this product.** It would
+help modestly as an input and not at all as a target, and the headline horizon is the wrong
+one for it to matter. That is a €0 answer to the project's most expensive open question.
+
+---
+
 ## Methodology: what was tried, what survived
 
 Eight modelling methods were tested against the incumbent on identical pre-test folds. The
@@ -170,17 +241,10 @@ split at 10 days:
 | ridge | **0.428** | 0.457 |
 | gbm *(shipped)* | 0.412 | **0.463** |
 
-**And that table contains an unflattering result worth stating plainly: on the market panel,
-plain ridge regression beats the gradient-boosted model we ship** (R² 0.428 vs 0.412, MCC
-0.408 vs 0.381). The GBM wins on sectors, where it has 471k pooled training rows; on the
-market's ~5,400 rows the extra flexibility is not paying for itself. It is not a one-window
-fluke either: across the full 15-fold walk-forward ridge also wins on skill (+0.387 vs
-+0.354, ahead in 10 of 15 folds). It is held rather than adopted only because the paired
-t-statistic is +1.45, below the t>2 bar this project set before any of these comparisons were
-run — the same bar that rejected the jump features. Switching it on a t of 1.45 would be
-exactly the post-hoc bar-moving the rest of this README refuses to do. It is the first thing
-to settle next, and it points the same way as everything else here: on thin data, simpler
-wins.
+On this single fixed window plain ridge outscores the shipped GBM on the market panel
+(0.428 vs 0.412). That looked like a problem and was investigated properly — see **The three
+open questions, now settled** above. On the pre-test folds that selection is actually
+permitted to use, the gap is t=+0.68 and ridge is worse on QLIKE, so the GBM stays.
 
 **Pooled training** was the one substantive win, and it fixed a real problem: the sector
 model had 37k rows and now trains on 471k. Volatility dynamics are broadly shared across
@@ -324,6 +388,8 @@ python -m volradar.cli select     # which factor families ship
 python -m volradar.cli events     # did it flag real volatility spikes?
 python -m volradar.cli decision   # would acting on it have helped?
 python -m volradar.cli simulate   # validate the method on known-truth synthetic markets
+python -m volradar.cli settle     # decide open model questions on pre-test folds
+python -m volradar.cli intraday   # is intraday data worth paying for?
 python -m volradar.cli train      # production fit + dashboard snapshot
 python -m volradar.cli all        # all of the above
 python -m volradar.cli serve      # API + dashboard
@@ -333,7 +399,7 @@ Every stage caches and is idempotent; `--force` rebuilds one from scratch. To re
 dashboard to the latest close without re-running the backtest:
 `fetch --force && build --force && train`.
 
-**Tests:** `pytest -q` — 43 tests covering causality, embargo, split boundaries, metric
+**Tests:** `pytest -q` — 51 tests covering causality, embargo, split boundaries, metric
 correctness against hand-computed values, conformal-interval causality (its width is derived
 from realized errors, so it is one edit from being the subtlest lookahead bug here), the
 synthetic-market generator, and the API contract.

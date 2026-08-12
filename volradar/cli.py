@@ -8,6 +8,8 @@
     python -m volradar.cli events     # did it flag real volatility spikes?
     python -m volradar.cli decision   # would acting on it have helped?
     python -m volradar.cli simulate   # validate the method on known-truth synthetic markets
+    python -m volradar.cli settle     # decide open model questions on pre-test folds
+    python -m volradar.cli intraday   # is intraday data worth paying for? (Oxford-Man)
     python -m volradar.cli train      # fit production models, write the snapshot
     python -m volradar.cli all        # everything above, in order
     python -m volradar.cli serve      # run the API + dashboard
@@ -80,6 +82,16 @@ def cmd_simulate(args):
     scenarios()
 
 
+def cmd_settle(args):
+    from volradar.backtest.settle import main as run
+    run()
+
+
+def cmd_intraday(args):
+    from volradar.backtest.intraday_study import main as run
+    run()
+
+
 def cmd_train(args):
     from volradar.models.train import main as run
     run()
@@ -119,6 +131,7 @@ COMMANDS = {
     "fetch": cmd_fetch, "build": cmd_build, "oos": cmd_oos, "evaluate": cmd_evaluate,
     "ablation": cmd_ablation, "methods": cmd_methods, "select": cmd_select,
     "events": cmd_events, "decision": cmd_decision, "simulate": cmd_simulate,
+    "settle": cmd_settle, "intraday": cmd_intraday,
     "train": cmd_train, "all": cmd_all, "serve": cmd_serve,
 }
 
