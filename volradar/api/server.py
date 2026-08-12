@@ -135,17 +135,28 @@ def history(panel: str = "market", ticker: str | None = None, limit: int = 1500)
 
     h = int(df["horizon"].iloc[0])
     df = df.sort_values("date").tail(limit)
+
+    lo_c, hi_c = "pred_lo_adaptive", "pred_hi_adaptive"
+    has_band = lo_c in df.columns
+    lo = annualize(df[lo_c]) if has_band else [None] * len(df)
+    hi = annualize(df[hi_c]) if has_band else [None] * len(df)
+
+    def _f(v):
+        return None if v is None or not np.isfinite(v) else round(float(v), 2)
+
     return _clean({
         "panel": panel, "ticker": ticker, "horizon": h,
         "series": [{"date": str(d.date()),
                     "forecast": round(float(f), 2),
                     "realized": round(float(a), 2),
                     "current": round(float(c), 2),
+                    "lo": _f(l), "hi": _f(hh),
                     "regime": int(r)}
-                   for d, f, a, c, r in zip(
+                   for d, f, a, c, l, hh, r in zip(
                        df["date"], annualize(df["pred"]),
                        annualize(df[config.fwd_col(h)]),
-                       annualize(df[config.persist_col(h)]), df["pred_regime"])],
+                       annualize(df[config.persist_col(h)]),
+                       lo, hi, df["pred_regime"])],
     })
 
 
@@ -159,6 +170,9 @@ def performance():
                        ("decision", "decision.csv"), ("ablation", "ablation.csv"),
                        ("decision_significance", "decision_significance.csv"),
                        ("family_selection", "family_selection.csv"),
+                       ("method_bakeoff", "method_bakeoff.csv"),
+                       ("conformal_market", "conformal_market.csv"),
+                       ("conformal_sector", "conformal_sector.csv"),
                        ("fixed_split", "fixed_split.csv")]:
         try:
             out[key] = _records(_report(fname))

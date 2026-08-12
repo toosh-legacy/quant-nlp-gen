@@ -4,6 +4,7 @@
     python -m volradar.cli build      # assemble feature panels
     python -m volradar.cli evaluate   # accuracy: fixed split, pooled OOS, walk-forward
     python -m volradar.cli ablation   # what each factor family is worth
+    python -m volradar.cli methods    # methodology bake-off: which modelling changes help
     python -m volradar.cli events     # did it flag real volatility spikes?
     python -m volradar.cli decision   # would acting on it have helped?
     python -m volradar.cli train      # fit production models, write the snapshot
@@ -51,6 +52,16 @@ def cmd_ablation(args):
     run()
 
 
+def cmd_methods(args):
+    from volradar.backtest.methods import main as run
+    run()
+
+
+def cmd_select(args):
+    from volradar.backtest.select_features import main as run
+    run()
+
+
 def cmd_events(args):
     from volradar.backtest.events import main as run
     run()
@@ -78,6 +89,7 @@ def cmd_all(args):
     _stage("out-of-sample predictions", cmd_oos, args)
     _stage("evaluate", cmd_evaluate, args)
     _stage("ablation", cmd_ablation, args)
+    _stage("methodology bake-off", cmd_methods, args)
     _stage("event study", cmd_events, args)
     _stage("decision simulation", cmd_decision, args)
     _stage("train production models", cmd_train, args)
@@ -96,7 +108,8 @@ def cmd_serve(args):
 
 COMMANDS = {
     "fetch": cmd_fetch, "build": cmd_build, "oos": cmd_oos, "evaluate": cmd_evaluate,
-    "ablation": cmd_ablation, "events": cmd_events, "decision": cmd_decision,
+    "ablation": cmd_ablation, "methods": cmd_methods, "select": cmd_select,
+    "events": cmd_events, "decision": cmd_decision,
     "train": cmd_train, "all": cmd_all, "serve": cmd_serve,
 }
 

@@ -103,6 +103,26 @@ SELECTED_FAMILIES: dict[str, list[str]] = {
     "sector": [],
 }
 
+# ---------------------------------------------------------------------------
+# Where each panel's model gets its TRAINING data
+# ---------------------------------------------------------------------------
+# "own"    — fit only on that panel's own history.
+# "pooled" — fit on all 91 series (79 stocks + 11 sector ETFs + SPY) at once, then predict
+#            the panel. Every feature is scale-free (log ratios, ranks, z-scores), and two
+#            indicator columns let the model tell an index from a single name.
+#
+# Chosen by the paired bake-off in `volradar/backtest/methods.py` on pre-test folds:
+#   sector : pooled wins, delta +0.011 skill, t = +2.15 over 12 folds (9/12 wins), and the
+#            same sign and size at 6 folds (t = +1.93). ~471k training rows instead of 37k.
+#   market : pooled LOSES (t = -1.11). Plausibly because the index is genuinely a different
+#            object from its constituents — diversification makes its volatility dynamics
+#            distinct — and 79 single stocks drown out the one series that matters.
+POOL_TAGS = ["is_index", "is_sector"]
+TRAINING_SOURCE: dict[str, str] = {
+    "market": "own",
+    "sector": "pooled",
+}
+
 # Family 2 — cross-sectional dispersion is computed from this stock universe (the same
 # ~80 liquid large-caps used by the earlier study, whose 2005-2024 OHLCV cache we reuse).
 BREADTH_UNIVERSE = [

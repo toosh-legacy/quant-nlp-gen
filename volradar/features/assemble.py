@@ -27,6 +27,48 @@ SECTOR_REL_FEATURES = ["sec_rv_rel", "sec_rv_rank", "sec_beta_63"]
 
 MARKET_PANEL = config.BUILD_DIR / "panel_market.parquet"
 SECTOR_PANEL = config.BUILD_DIR / "panel_sector.parquet"
+POOLED_PANEL = config.BUILD_DIR / "panel_pooled.parquet"
+
+
+def build_pooled_panel(force: bool = False) -> pd.DataFrame:
+    """Every series — 79 single stocks, 11 sector ETFs and SPY — in one long panel.
+
+    The motivation is a sample-size problem the two-panel design cannot fix. The market
+    model has ~5,400 daily rows and roughly twenty features; that is thin enough that a
+    gradient-boosted model is fitting noise as much as signal, which is exactly what the
+    unstable per-year results suggested.
+
+    But volatility dynamics are largely *shared* across equities: clustering, mean
+    reversion, the leverage effect and the range/close-to-close relationship all behave
+    alike whether the series is Apple, the energy sector or the index. So a model can be
+    fitted on the pooled cross-section — roughly 470,000 rows — and applied to the market,
+    provided every feature is scale-free. They are: each one is a log ratio, a log level of
+    a return-based quantity, a rank, or a z-score, so a $400 index and a $30 stock produce
+    comparable inputs.
+
+    A `series_type` column is carried so the model can still distinguish an index from a
+    single name, since diversification makes indices genuinely less volatile.
+    """
+    config.ensure_dirs()
+    if POOLED_PANEL.exists() and not force:
+        return pd.read_parquet(POOLED_PANEL)
+
+    raw = fetch.fetch_all()
+    parts = []
+    for name, key in [("stock", "breadth"), ("sector", "sectors"), ("index", "market")]:
+        core = build_core(raw[key])
+        core["series_type"] = name
+        parts.append(core)
+
+    pooled = pd.concat(parts, ignore_index=True)
+    # Numeric encoding for the model; ordered by breadth of diversification.
+    pooled["is_index"] = (pooled["series_type"] == "index").astype(int)
+    pooled["is_sector"] = (pooled["series_type"] == "sector").astype(int)
+    pooled = pooled.sort_values(["ticker", "date"]).reset_index(drop=True)
+    pooled.to_parquet(POOLED_PANEL, index=False)
+    print(f"  pooled panel -> {POOLED_PANEL.name} ({len(pooled):,} rows, "
+          f"{pooled['ticker'].nunique()} series)")
+    return pooled
 
 
 def _merge_date_blocks(base: pd.DataFrame, blocks: list[pd.DataFrame]) -> pd.DataFrame:
@@ -118,14 +160,56 @@ def all_features(panel: str) -> list[str]:
     """
     fams = feature_families(panel)
     kept = config.SELECTED_FAMILIES.get(panel, [])
-    return list(fams["core"]) + [c for k in kept for c in fams[k]]
+    feats = list(fams["core"]) + [c for k in kept for c in fams[k]]
+    if config.TRAINING_SOURCE.get(panel) == "pooled":
+        feats += config.POOL_TAGS
+    return feats
 
 
 def load_panel(panel: str) -> pd.DataFrame:
+    """The frame a panel is EVALUATED and SERVED on.
+
+    When a panel trains on the pooled cross-section, its evaluation rows are taken from the
+    pooled frame too, so that training and serving see identical columns. Anything else
+    invites the classic train/serve skew where a model is fitted on one feature layout and
+    called with another.
+    """
+    if config.TRAINING_SOURCE.get(panel) == "pooled":
+        pooled = build_pooled_panel()
+        if panel == "market":
+            out = pooled[pooled["ticker"] == config.MARKET_TICKER].copy()
+        else:
+            out = pooled[pooled["ticker"].isin(config.SECTOR_ETFS)].copy()
+            out["sector_name"] = out["ticker"].map(config.SECTOR_ETFS)
+        return out.reset_index(drop=True)
+
     path = MARKET_PANEL if panel == "market" else SECTOR_PANEL
     if not path.exists():
         raise FileNotFoundError(f"{path} missing — run `python -m volradar.cli build` first.")
     return pd.read_parquet(path)
+
+
+def load_training_panel(panel: str) -> pd.DataFrame:
+    """The frame a panel's model is FITTED on — the whole cross-section when pooled."""
+    if config.TRAINING_SOURCE.get(panel) == "pooled":
+        return build_pooled_panel()
+    return load_panel(panel)
+
+
+def fit_and_eval_frames(panel: str, features: list[str], h: int):
+    """(training rows, evaluation rows) for a panel — the only place the two can differ.
+
+    Returning both from one function keeps the distinction explicit at every call site.
+    When a panel trains on its own history the two frames are the same object's rows, so
+    nothing changes; when it trains on the pooled cross-section, the split is visible in
+    the caller rather than hidden inside a loader.
+    """
+    from volradar.models import dataset as D
+
+    eval_df = D.labelled(load_panel(panel), features, h)
+    if config.TRAINING_SOURCE.get(panel) != "pooled":
+        return eval_df, eval_df
+    return D.labelled(load_training_panel(panel), features, h), eval_df
 
 
 if __name__ == "__main__":

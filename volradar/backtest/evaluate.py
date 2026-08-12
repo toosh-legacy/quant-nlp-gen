@@ -14,15 +14,17 @@ import pandas as pd
 
 from volradar import config
 from volradar.backtest import metrics as M
-from volradar.features.assemble import all_features, load_panel
+from volradar.features.assemble import all_features, fit_and_eval_frames, load_panel
 from volradar.models import estimators as E
 from volradar.models import dataset as D
 
 
-def _tuned_params(df: pd.DataFrame, features: list[str], h: int, quiet=False) -> dict:
+def _tuned_params(df: pd.DataFrame, features: list[str], h: int, quiet=False,
+                  val_df: pd.DataFrame | None = None) -> dict:
     """Tune GBM on a chronological validation slice inside the training period."""
     fit = D.embargoed_train(df, h, pd.Timestamp(config.VAL_START))
-    val = D.time_slice(df, config.VAL_START, config.VAL_END)
+    val = D.time_slice(val_df if val_df is not None else df,
+                       config.VAL_START, config.VAL_END)
     if len(fit) < 200 or len(val) < 100:
         return E.GBM_DEFAULT
     return E.tune_gbm(fit, val, features, h, quiet=quiet)
@@ -36,10 +38,10 @@ def fixed_split(panel: str, quiet: bool = False) -> pd.DataFrame:
     rows = []
 
     for h in config.HORIZONS:
-        sub = D.labelled(df, features, h)
-        train = D.embargoed_train(sub, h, cutoff)
+        tr_sub, sub = fit_and_eval_frames(panel, features, h)
+        train = D.embargoed_train(tr_sub, h, cutoff)
         test = D.time_slice(sub, cutoff)
-        params = _tuned_params(sub, features, h, quiet=quiet)
+        params = _tuned_params(tr_sub, features, h, quiet=quiet, val_df=sub)
         y_test = test[config.fwd_col(h)].to_numpy(float)
         persist = test[config.persist_col(h)].to_numpy(float)
 
@@ -50,7 +52,8 @@ def fixed_split(panel: str, quiet: bool = False) -> pd.DataFrame:
                    "n_train": len(train), "n_test": len(test)}
             row.update(M.regression_metrics(y_test, pred, persist))
             row.update(M.direction_metrics(y_test, pred, persist))
-            thr = D.regime_thresholds(train, h)
+            # From the panel's own pre-cutoff rows, not the (possibly pooled) train frame.
+            thr = D.regime_thresholds(D.embargoed_train(sub, h, cutoff), h)
             row.update(M.regime_metrics(D.to_regime(y_test, thr), D.to_regime(pred, thr)))
             rows.append(row)
 
@@ -69,11 +72,11 @@ def walk_forward(panel: str, model_name: str = "gbm") -> tuple[pd.DataFrame, pd.
     folds = []
 
     for h in config.HORIZONS:
-        sub = D.labelled(df, features, h)
-        params = _tuned_params(sub, features, h, quiet=True)
+        tr_sub, sub = fit_and_eval_frames(panel, features, h)
+        params = _tuned_params(tr_sub, features, h, quiet=True, val_df=sub)
         for year in config.WALK_YEARS:
             cutoff = pd.Timestamp(f"{year}-01-01")
-            train = D.embargoed_train(sub, h, cutoff)
+            train = D.embargoed_train(tr_sub, h, cutoff)
             test = D.time_slice(sub, cutoff, f"{year + 1}-01-01")
             # Minimum sizes so a half-empty first fold cannot dominate the mean.
             if len(train) < 400 or len(test) < 60:
@@ -138,13 +141,13 @@ def per_sector_walk_forward() -> pd.DataFrame:
     df = load_panel("sector")
     features = all_features("sector")
     h = config.HEADLINE_HORIZON
-    sub = D.labelled(df, features, h)
-    params = _tuned_params(sub, features, h, quiet=True)
+    tr_sub, sub = fit_and_eval_frames("sector", features, h)
+    params = _tuned_params(tr_sub, features, h, quiet=True, val_df=sub)
 
     rows = []
     for year in config.WALK_YEARS:
         cutoff = pd.Timestamp(f"{year}-01-01")
-        train = D.embargoed_train(sub, h, cutoff)
+        train = D.embargoed_train(tr_sub, h, cutoff)
         test = D.time_slice(sub, cutoff, f"{year + 1}-01-01")
         if len(train) < 400 or len(test) < 60:
             continue

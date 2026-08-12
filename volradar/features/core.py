@@ -41,18 +41,62 @@ CORE_FEATURES = [
 ]
 
 
+# Jump-robust block, kept separate from CORE_FEATURES so previously reported results stay
+# reproducible. Volatility has a continuous (diffusive) part and a discontinuous (jump)
+# part, and they forecast very differently: the continuous part is highly persistent, while
+# jumps are largely transitory. Andersen-Bollerslev-Diebold's HAR-CJ result is that
+# separating them beats lumping them together, because a model fed total volatility
+# over-extrapolates yesterday's one-off gap.
+JUMP_FEATURES = ["log_bpv_m", "jump_share_m", "log_jump_d", "rq_ratio"]
+
+
 def _roll_rv(g: pd.core.groupby.generic.SeriesGroupBy, window: int) -> pd.Series:
     """Root-mean-square of a squared-return column over a trailing window, per ticker."""
     return np.sqrt(g.transform(lambda s: s.rolling(window).mean()))
 
 
-def build_core(df: pd.DataFrame, horizons: list[int] | None = None) -> pd.DataFrame:
+def add_jump_features(out: pd.DataFrame) -> pd.DataFrame:
+    """Bipower variation and the jump/continuous split, from daily returns.
+
+    Bipower variation estimates the *continuous* part of variance using products of
+    adjacent absolute returns: a single large jump inflates one term but is damped by its
+    small neighbour, so BPV survives jumps that wreck realized variance. The gap
+    RV - BPV is the jump component.
+
+    Standard scaling constant mu1^-2 = (pi/2) for the adjacent-absolute-return estimator.
+    """
+    df = out
+    def gr(col: str):
+        return df.groupby("ticker", observed=True)[col]
+
+    absr = df["ret"].abs()
+    df["_bp"] = (np.pi / 2.0) * absr * gr("ret").transform(lambda s: s.abs().shift(1))
+
+    bpv_m = gr("_bp").transform(lambda s: s.rolling(21).mean())
+    rv_m = df.groupby("ticker", observed=True)["_r2"].transform(lambda s: s.rolling(21).mean())
+
+    df["log_bpv_m"] = np.log(np.sqrt(bpv_m.clip(lower=EPS)) + EPS)
+    # Share of monthly variance attributable to jumps, floored at zero (the estimator can
+    # go slightly negative on noise).
+    df["jump_share_m"] = ((rv_m - bpv_m).clip(lower=0.0) / rv_m.clip(lower=EPS)).clip(0, 1)
+    # Today's own jump size.
+    df["log_jump_d"] = np.log(np.sqrt((df["_r2"] - df["_bp"]).clip(lower=0.0)) + EPS)
+    # Realized quarticity ratio — how heavy-tailed the recent return distribution is.
+    # High values mean the realized-vol estimate itself is noisy and should be trusted less.
+    rq = df.groupby("ticker", observed=True)["_r4"].transform(lambda s: s.rolling(21).mean())
+    df["rq_ratio"] = np.log(rq.clip(lower=EPS)) - 2.0 * np.log(rv_m.clip(lower=EPS))
+    return df
+
+
+def build_core(df: pd.DataFrame, horizons: list[int] | None = None,
+               with_jumps: bool = True) -> pd.DataFrame:
     """Add core volatility features and forward log-RV targets to a long OHLCV frame.
 
     Parameters
     ----------
     df : long frame with columns date, ticker, open, high, low, close, volume
     horizons : forecast horizons in trading days (defaults to config.HORIZONS)
+    with_jumps : also compute the jump-robust block (JUMP_FEATURES)
     """
     horizons = horizons or config.HORIZONS
     out = df.sort_values(["ticker", "date"]).reset_index(drop=True).copy()
@@ -62,6 +106,7 @@ def build_core(df: pd.DataFrame, horizons: list[int] | None = None) -> pd.DataFr
 
     out["ret"] = gr("close").transform(lambda s: s.pct_change())
     out["_r2"] = out["ret"] ** 2
+    out["_r4"] = out["ret"] ** 4
 
     # --- Multi-scale realized vol (daily, weekly, monthly, quarterly look-backs) -------
     out["log_rv_d"] = np.log(out["ret"].abs() + EPS)
@@ -105,6 +150,9 @@ def build_core(df: pd.DataFrame, horizons: list[int] | None = None) -> pd.DataFr
         out[config.fwd_col(h)] = np.log(fwd + EPS)
         out[config.persist_col(h)] = np.log(_roll_rv(gr("_r2"), h) + EPS)
         out[config.label_date_col(h)] = gr("date").transform(lambda s: s.shift(-h))
+
+    if with_jumps:
+        out = add_jump_features(out)
 
     return out.drop(columns=[c for c in out.columns if c.startswith("_")])
 

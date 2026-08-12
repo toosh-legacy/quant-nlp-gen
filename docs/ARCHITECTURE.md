@@ -8,19 +8,21 @@ volradar/
   cli.py                 one entrypoint for every stage
   data/fetch.py          download + cache raw series, with a coverage guard
   features/
-    core.py              per-series volatility features and forward targets
+    core.py              per-series volatility features, jump block, forward targets
     factors.py           the four candidate external factor families
-    assemble.py          join into the market and sector panels
+    assemble.py          market, sector and pooled panels; train-vs-eval frame split
   models/
     dataset.py           splitting, embargo, regime thresholds  ← the honesty layer
     estimators.py        the model ladder: persistence → HAR → ridge → gbm
+    conformal.py         calibrated prediction intervals, adaptively corrected
     train.py             production fit + the snapshot the dashboard reads
   backtest/
-    metrics.py           every metric, defined once
+    metrics.py           every metric, defined once (incl. QLIKE)
     evaluate.py          fixed split, pooled OOS, walk-forward, per-sector
-    oos.py               walk-forward out-of-sample prediction series
+    oos.py               walk-forward out-of-sample prediction series + intervals
     select_features.py   which factor families ship (decided pre-test)
     ablation.py          what each family is worth
+    methods.py           methodology bake-off, paired against the incumbent
     events.py            did it flag real volatility spikes?
     decision.py          would acting on it have helped?
   api/server.py          FastAPI — reads artifacts, computes nothing

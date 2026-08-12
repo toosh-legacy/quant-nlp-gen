@@ -24,14 +24,17 @@ ever shown the data it is graded on.
 | | market (SPY) | sectors (11 ETFs) |
 |---|:---:|:---:|
 | out-of-sample days | 3,662 | 37,558 |
-| **R² (log realized vol)** | **0.421** | **0.479** |
+| **R² (log realized vol)** | **0.421** | **0.481** |
 | persistence baseline R² | 0.111 | 0.208 |
-| **error removed vs baseline** | **35%** | **34%** |
-| rise/fall accuracy | **70.5%** (base 53.5%) | **70.4%** (base 51.0%) |
-| rise/fall MCC | 0.409 | 0.408 |
-| regime accuracy (3-class) | 64.7% (base 47.8%) | 66.4% (base 51.2%) |
+| **error removed vs baseline** | **35%** | **35%** |
+| rise/fall accuracy | **70.5%** (base 53.5%) | **70.9%** (base 51.0%) |
+| rise/fall MCC | 0.409 | 0.417 |
+| regime accuracy (3-class) | 64.7% (base 47.8%) | 66.3% (base 51.2%) |
+| 80% interval, realized coverage | 78.0% | 78.5% |
 
-At the 5-day horizon: market R² **0.446**, MCC **0.464**; sectors R² **0.427**, MCC **0.450**.
+At the 5-day horizon: market R² **0.446**, MCC **0.464**; sectors R² **0.426**, MCC **0.453**.
+Every forecast ships with a **calibrated uncertainty band**, and the coverage row above is
+what that band actually delivered out-of-sample — not what it nominally promised.
 
 **Stability — the number that matters most.** Skill versus the persistence baseline, scored
 year by year so both sides face the same window:
@@ -40,11 +43,57 @@ year by year so both sides face the same window:
 |---|:---:|:---:|:---:|
 | market · 5d | +0.403 ± 0.123 | +0.184 | **15 / 15** |
 | market · 10d | +0.354 ± 0.186 | +0.009 | **15 / 15** |
-| sector · 5d | +0.408 ± 0.058 | +0.231 | **15 / 15** |
-| sector · 10d | +0.351 ± 0.107 | +0.055 | **15 / 15** |
+| sector · 5d | +0.407 ± 0.077 | +0.160 | **15 / 15** |
+| sector · 10d | +0.358 ± 0.125 | −0.008 | 14 / 15 |
 
-Every sector individually beats persistence — skill 0.29–0.39, direction accuracy 68–72%
+Every sector individually beats persistence — skill 0.29–0.41, direction accuracy 69–73%
 across all eleven. No sector is carried by the others.
+
+One honest note on that table: pooled training raised the sector 10-day mean (0.351 → 0.358)
+and improved nine of eleven sectors, but one walk-forward year slipped to −0.008 where the
+previous model had been positive in all fifteen. That is a rounding error against a baseline,
+not a regime the model fails in — but the row says 14/15 rather than 15/15, so it is written
+as 14/15.
+
+---
+
+## Methodology: what was tried, what survived
+
+Eight modelling methods were tested against the incumbent on identical pre-test folds. The
+comparison is **paired** — fold by fold, not average against average — because judging two
+separate means lets an *unstable* incumbent inflate its own replacement bar, which is
+exactly backwards.
+
+| method | idea | verdict |
+|---|---|---|
+| **pooled training** | fit on all 91 series (79 stocks + 11 sectors + SPY) instead of one panel | **adopted (sectors)** — t=+2.15, wins 9/12 folds |
+| jump features | bipower variation / HAR-CJ continuous-vs-jump split | rejected — *see below* |
+| pooled + residual correction | pooled fit plus a panel-specific correction | no gain over plain pooling |
+| shrink to persistence | optimal blend with the baseline | worse (t=−1.35) |
+| recency weighting | 3-year half-life on training samples | no gain |
+| HAR + GBM average | equal-weight forecast combination | worse at 10d (t=−2.63 on sectors) |
+| **adaptive conformal** | online-corrected prediction intervals | **adopted (both panels)** |
+| **QLIKE** | volatility-native loss, robust to a noisy proxy | **adopted as a reported metric** |
+
+**Pooled training** was the one substantive win, and it fixed a real problem: the sector
+model had 37k rows and now trains on 471k. Volatility dynamics are broadly shared across
+equities and every feature is scale-free, so the cross-section supplies data one series
+cannot. Nine of eleven sectors improved individually. It did **not** help the market panel
+(t=−1.11) — plausibly because an index is genuinely a different object from its
+constituents, and 79 single stocks drown out the one series that matters.
+
+**The jump-feature result is the cautionary one.** On annual folds it looked decisive
+(t=+3.26, 5/6 wins). Re-run on semi-annual folds over the same window it collapsed to
+t=+0.29. A result that depends on how you slice the calendar is not a result, so it was
+rejected — despite being the most theoretically motivated candidate in the list.
+
+**Uncertainty bands, and why they are adaptive.** Split conformal prediction gives interval
+coverage guarantees without distributional assumptions — but only under *exchangeability*,
+which financial time series plainly violate. The violation was measurable: the static 80%
+band covered just **73%** of outcomes on the market panel. Adaptive conformal inference
+(Gibbs & Candès) steers the interval width from realized misses, restoring coverage to
+**78%**. Bands widen after a run of misses and tighten once forecasts land again. The
+dashboard shows the measured coverage next to the band rather than the nominal figure.
 
 ---
 
@@ -163,6 +212,8 @@ python -m volradar.cli fetch      # download raw series (network)
 python -m volradar.cli build      # assemble market + sector panels
 python -m volradar.cli evaluate   # fixed split, pooled OOS, walk-forward, per-sector
 python -m volradar.cli ablation   # what each factor family is worth
+python -m volradar.cli methods    # methodology bake-off (paired, pre-test folds)
+python -m volradar.cli select     # which factor families ship
 python -m volradar.cli events     # did it flag real volatility spikes?
 python -m volradar.cli decision   # would acting on it have helped?
 python -m volradar.cli train      # production fit + dashboard snapshot
@@ -174,8 +225,10 @@ Every stage caches and is idempotent; `--force` rebuilds one from scratch. To re
 dashboard to the latest close without re-running the backtest:
 `fetch --force && build --force && train`.
 
-**Tests:** `pytest -q` — 27 tests covering causality, embargo, split boundaries, metric
-correctness against hand-computed values, and the API contract.
+**Tests:** `pytest -q` — 36 tests covering causality, embargo, split boundaries, metric
+correctness against hand-computed values, conformal-interval causality (its width is derived
+from realized errors, so it is one edit from being the subtlest lookahead bug here), and the
+API contract.
 
 **Data:** Yahoo Finance via `yfinance` — free, no API key. Prices 2005 → today.
 

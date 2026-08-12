@@ -1,7 +1,7 @@
 import React from "react";
 import {
-  Area, AreaChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer,
-  Tooltip, XAxis, YAxis,
+  Area, AreaChart, CartesianGrid, ComposedChart, Legend, Line, LineChart,
+  ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { Card } from "./ui";
 
@@ -24,32 +24,44 @@ const tooltipStyle = {
  * that year.
  */
 export function HistoryChart({ history, title, sub }) {
+  const hasBand = history.series.some((d) => d.lo != null);
   const data = history.series.map((d) => ({
     date: d.date,
     Forecast: d.forecast,
     Realized: d.realized,
+    // Recharts stacks an area from a [lo, hi] pair, which draws the band directly.
+    Range: d.lo != null && d.hi != null ? [d.lo, d.hi] : null,
   }));
 
   return (
     <Card title={title} sub={sub}>
       <ResponsiveContainer width="100%" height={300}>
-        <LineChart data={data} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
+        <ComposedChart data={data} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
           <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
           <XAxis dataKey="date" tick={AXIS} tickLine={false} axisLine={{ stroke: GRID }}
                  minTickGap={70} />
           <YAxis tick={AXIS} tickLine={false} axisLine={false}
                  tickFormatter={(v) => `${v}%`} width={52} />
-          <Tooltip {...tooltipStyle} formatter={(v) => `${Number(v).toFixed(1)}%`} />
+          <Tooltip {...tooltipStyle}
+                   formatter={(v) => Array.isArray(v)
+                     ? `${Number(v[0]).toFixed(1)}–${Number(v[1]).toFixed(1)}%`
+                     : `${Number(v).toFixed(1)}%`} />
           <Legend wrapperStyle={{ fontSize: 12.5, paddingTop: 8 }} iconType="plainline" />
+          {hasBand && (
+            <Area type="monotone" dataKey="Range" stroke="none" fill="#5aa9ff"
+                  fillOpacity={0.15} name="80% range" />
+          )}
           <Line type="monotone" dataKey="Realized" stroke="#8b98ae" dot={false}
                 strokeWidth={1.4} />
           <Line type="monotone" dataKey="Forecast" stroke="#5aa9ff" dot={false}
                 strokeWidth={1.8} />
-        </LineChart>
+        </ComposedChart>
       </ResponsiveContainer>
       <p className="sub" style={{ margin: "10px 0 0" }}>
         Annualized volatility, percent. Grey is what actually happened; blue is what the
-        model said in advance.
+        model said in advance. The shaded band is the calibrated 80% range — it is allowed
+        to be wrong one day in five, and the Track record tab reports how often it actually
+        was.
       </p>
     </Card>
   );

@@ -2,6 +2,10 @@ import React from "react";
 import { Card } from "./ui";
 import { num, pct01, signed } from "../format";
 
+// Which bake-off candidates were actually adopted into the shipped pipeline. Kept explicit
+// so the table cannot drift out of step with config.TRAINING_SOURCE.
+const ADOPTED = { "sector:pooled": true };
+
 const Row = ({ k, v, good }) => (
   <div className="kv">
     <span className="k">{k}</span>
@@ -30,6 +34,11 @@ export function TrackRecord({ perf }) {
   const persist = decision.find((d) => d.strategy === "persistence_sized");
   const sig = (perf.decision_significance || [])[0];
   const detected = events.filter((e) => e.detected).length;
+  const bakeoff = perf.method_bakeoff || [];
+  const conformal = [
+    ...(perf.conformal_market || []),
+    ...(perf.conformal_sector || []),
+  ];
 
   return (
     <>
@@ -165,6 +174,105 @@ export function TrackRecord({ perf }) {
           <p className="sub" style={{ margin: "14px 0 0" }}>
             Showing every threshold rather than one chosen point. A model set to warn
             constantly catches everything and is worthless — the cost is in the last column.
+          </p>
+        </Card>
+      </div>
+
+      <h3 className="section-title">Methods that were tried</h3>
+      <p className="section-note">
+        Each candidate is a different <em>method</em> — a different training set, loss
+        function, feature block or combination rule — scored on identical pre-test folds and
+        compared to the incumbent fold by fold. Paired comparison matters here: judging two
+        separate averages lets an <em>unstable</em> incumbent raise its own replacement bar,
+        which is backwards.
+      </p>
+
+      <div className="grid two">
+        <Card title="Method bake-off" sub="Skill vs persistence on pre-test folds; adopted only if it beat the incumbent consistently">
+          <div className="scroll-x">
+            <table>
+              <thead>
+                <tr>
+                  <th>Method</th>
+                  <th className="num">Panel</th>
+                  <th className="num">Skill</th>
+                  <th className="num">QLIKE gain</th>
+                  <th className="num">Adopted</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bakeoff.filter((b) => b.horizon === 10).map((b, i) => (
+                  <tr key={i} className={ADOPTED[`${b.panel}:${b.method}`] ? "on" : ""}>
+                    <td>
+                      {b.method}
+                      <small style={{ display: "block", color: "var(--dim)", fontSize: 11.5 }}>
+                        {b.note}
+                      </small>
+                    </td>
+                    <td className="num muted">{b.panel}</td>
+                    <td className="num">{num(b.skill_mean, 3)}</td>
+                    <td className="num muted">{num(b.qlike_gain, 3)}</td>
+                    <td className="num">
+                      {b.method === "incumbent"
+                        ? "—"
+                        : ADOPTED[`${b.panel}:${b.method}`]
+                        ? <span className="good-txt">yes</span>
+                        : <span className="muted">no</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="sub" style={{ margin: "14px 0 0" }}>
+            Only <strong>pooled training</strong> on the sector panel was adopted — fitting on
+            all 91 series (471k rows instead of 37k) rather than each sector alone. Jump
+            features looked significant on annual folds and vanished on semi-annual ones, so
+            they were rejected: a result that depends on how you slice the calendar is not a
+            result.
+          </p>
+        </Card>
+
+        <Card title="Are the uncertainty bands honest?" sub="Nominal 80% range vs the coverage actually achieved out-of-sample">
+          <div className="scroll-x">
+            <table>
+              <thead>
+                <tr>
+                  <th>Panel</th>
+                  <th className="num">Method</th>
+                  <th className="num">Nominal</th>
+                  <th className="num">Realized</th>
+                  <th className="num">Median width</th>
+                </tr>
+              </thead>
+              <tbody>
+                {conformal.map((c, i) => (
+                  <React.Fragment key={i}>
+                    <tr>
+                      <td>{c.panel}</td>
+                      <td className="num muted">static</td>
+                      <td className="num muted">{pct01(c.nominal_coverage)}</td>
+                      <td className="num">{pct01(c.static_realized_coverage)}</td>
+                      <td className="num muted">{num(c.static_median_width_vol_pts, 1)} pts</td>
+                    </tr>
+                    <tr className="on">
+                      <td />
+                      <td className="num">adaptive</td>
+                      <td className="num muted">{pct01(c.nominal_coverage)}</td>
+                      <td className="num good-txt">{pct01(c.adaptive_realized_coverage)}</td>
+                      <td className="num muted">{num(c.adaptive_median_width_vol_pts, 1)} pts</td>
+                    </tr>
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="sub" style={{ margin: "14px 0 0" }}>
+            A standard conformal interval assumes the data is exchangeable. Markets are not,
+            and it showed: the static band promised 80% and delivered 73% on the market panel.
+            The shipped band steers its own width from realized misses, which brings coverage
+            back near target. The bands you see are the ones that were measured — not the
+            ones that were promised.
           </p>
         </Card>
       </div>

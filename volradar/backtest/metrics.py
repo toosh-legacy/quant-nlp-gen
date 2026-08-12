@@ -19,14 +19,34 @@ from sklearn.metrics import (accuracy_score, matthews_corrcoef, mean_absolute_er
                              r2_score)
 
 
+def qlike(y_log_vol, pred_log_vol) -> float:
+    """Mean QLIKE loss — the volatility-native alternative to squared error.
+
+    QLIKE(sigma^2, h) = log(h) + sigma^2/h. With log daily volatility inputs, h = exp(2p)
+    and sigma^2 = exp(2y), giving 2p + exp(2(y - p)).
+
+    Two reasons it belongs next to R^2. It is **scale-aware**: squared error on logs
+    punishes a given miss identically at 10% and 60% volatility, while QLIKE penalises
+    under-forecasting risk harder than over-forecasting it — the asymmetry a risk user
+    actually faces. And it is **robust to a noisy proxy**: realized volatility is only an
+    estimate of true volatility, and QLIKE is one of the few losses whose ranking of
+    forecasts survives that noise without bias (Patton 2011). Lower is better.
+    """
+    y = np.asarray(y_log_vol, float)
+    p = np.asarray(pred_log_vol, float)
+    d = np.clip(2.0 * (y - p), -20, 20)          # guard the exponential against outliers
+    return float(np.mean(2.0 * p + np.exp(d)))
+
+
 def regression_metrics(y_true, y_pred, y_persist=None) -> dict:
-    """R^2, RMSE, MAE, and skill relative to the persistence baseline."""
+    """R^2, RMSE, MAE, QLIKE, and skill relative to the persistence baseline."""
     y_true = np.asarray(y_true, float)
     y_pred = np.asarray(y_pred, float)
     out = {
         "r2": float(r2_score(y_true, y_pred)),
         "rmse": float(np.sqrt(np.mean((y_true - y_pred) ** 2))),
         "mae": float(mean_absolute_error(y_true, y_pred)),
+        "qlike": qlike(y_true, y_pred),
     }
     if y_persist is not None:
         yp = np.asarray(y_persist, float)
@@ -35,6 +55,9 @@ def regression_metrics(y_true, y_pred, y_persist=None) -> dict:
         # Fraction of the persistence baseline's squared error that the model removed.
         out["skill_vs_persistence"] = float(1.0 - np.mean((y_true - y_pred) ** 2) / mse_p) \
             if mse_p > 0 else np.nan
+        # Same idea under the volatility-native loss: how much QLIKE the model removed.
+        out["qlike_persistence"] = qlike(y_true, yp)
+        out["qlike_gain"] = out["qlike_persistence"] - out["qlike"]
     return out
 
 

@@ -19,6 +19,23 @@ export function MarketCard({ f, horizon }) {
         <Chip regime={f.regime} />
       </div>
 
+      {f.forecast_lo_ann != null && (
+        <p className="from-line" style={{ marginTop: 10 }}>
+          Likely range{" "}
+          <strong className="mono">
+            {pct(f.forecast_lo_ann)} – {pct(f.forecast_hi_ann)}
+          </strong>
+          {f.measured_coverage != null && (
+            <span className="muted">
+              {" "}
+              · this band has contained the outcome{" "}
+              <strong>{(f.measured_coverage * 100).toFixed(0)}%</strong> of the time
+              out-of-sample
+            </span>
+          )}
+        </p>
+      )}
+
       <p className="from-line">
         Currently running at <strong className="mono">{pct(f.current_vol_ann)}</strong> (
         {f.current_regime}) — the forecast is for volatility to{" "}

@@ -19,9 +19,10 @@ import pandas as pd
 
 from volradar import config
 from volradar.backtest.oos import annualize
-from volradar.features.assemble import all_features, load_panel
+from volradar.features.assemble import all_features, fit_and_eval_frames, load_panel
 from volradar.models import dataset as D
 from volradar.models import estimators as E
+from volradar.models import conformal
 
 SNAPSHOT_PATH = config.REPORT_DIR / "snapshot.json"
 
@@ -58,24 +59,60 @@ def _feature_contributions(model: E.Fitted, row: pd.DataFrame, background: pd.Da
     return out[:top_n]
 
 
+def _live_band(panel: str, pred_log: float) -> dict:
+    """A calibrated uncertainty band for today's forecast.
+
+    The half-width is taken from the most recent *adaptive* conformal interval in the
+    out-of-sample series rather than recomputed from a nominal quantile. That matters: the
+    static interval demonstrably under-covers on the market panel (73% against a nominal
+    80%), because financial data is not exchangeable. The adaptive width is the one whose
+    realized coverage was actually measured, so the band shown is the band that has been
+    verified — and the measured figure is carried alongside it rather than the promise.
+    """
+    path = config.REPORT_DIR / f"oos_{panel}.parquet"
+    cov_path = config.REPORT_DIR / f"conformal_{panel}.csv"
+    if not path.exists():
+        return {}
+    oos = pd.read_parquet(path)
+    if "pred_lo_adaptive" not in oos.columns:
+        return {}
+    last = oos.sort_values("date").dropna(subset=["pred_lo_adaptive"]).tail(1)
+    if last.empty:
+        return {}
+    half = float(last["pred_hi_adaptive"].iloc[0] - last["pred_lo_adaptive"].iloc[0]) / 2.0
+
+    out = {
+        "forecast_lo_ann": round(float(annualize(pred_log - half)), 2),
+        "forecast_hi_ann": round(float(annualize(pred_log + half)), 2),
+        "nominal_coverage": conformal.COVERAGE,
+    }
+    if cov_path.exists():
+        c = pd.read_csv(cov_path).iloc[0]
+        out["measured_coverage"] = round(float(c.get("adaptive_realized_coverage", float("nan"))), 4)
+    return out
+
+
 def fit_production(panel: str, h: int) -> tuple[E.Fitted, dict]:
     """Train on all labelled history; return the model and its metadata."""
-    df = load_panel(panel)
     features = all_features(panel)
-    sub = D.labelled(df, features, h)
+    tr_sub, sub = fit_and_eval_frames(panel, features, h)
 
-    fit = D.embargoed_train(sub, h, pd.Timestamp(config.VAL_START))
+    fit = D.embargoed_train(tr_sub, h, pd.Timestamp(config.VAL_START))
     val = D.time_slice(sub, config.VAL_START, config.VAL_END)
     params = (E.tune_gbm(fit, val, features, h, quiet=True)
               if len(fit) > 200 and len(val) > 100 else E.GBM_DEFAULT)
 
-    model = E.fit_gbm(sub, features, h, params)
+    model = E.fit_gbm(tr_sub, features, h, params)
+    # Regime bands describe THIS panel's own volatility distribution, so they come from the
+    # evaluation frame even when the model was fitted on the pooled cross-section — a band
+    # derived from single stocks would call a normal index day "calm".
     thr = D.regime_thresholds(sub, h)
     meta = {
         "panel": panel, "horizon": h, "model": "gbm", "params": params,
-        "n_train": int(len(sub)), "n_features": len(features), "features": features,
-        "train_start": str(sub["date"].min().date()),
-        "train_end": str(sub["date"].max().date()),
+        "training_source": config.TRAINING_SOURCE.get(panel, "own"),
+        "n_train": int(len(tr_sub)), "n_features": len(features), "features": features,
+        "train_start": str(tr_sub["date"].min().date()),
+        "train_end": str(tr_sub["date"].max().date()),
         "regime_thresholds": {"calm_max": thr[0], "normal_max": thr[1]},
         "fitted_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -111,6 +148,7 @@ def build_snapshot() -> dict:
             "calm_max": round(float(annualize(thr[0])), 2),
             "normal_max": round(float(annualize(thr[1])), 2),
         },
+        **_live_band("market", pred_m),
         "drivers": _feature_contributions(mkt_model, latest_m, mkt),
         "meta": {k: v for k, v in mkt_meta.items() if k != "features"},
     }
