@@ -157,8 +157,30 @@ comparison is on RV and VIX inputs, while our edge comes from range-based estima
 recover intraday information from daily bars; and they forecast one day ahead for single
 stocks, where we forecast a ten-day average for an index. Different problem, different answer.
 
-The lasting benefit is to the *benchmarks*: HARQ and SHAR now sit in the model ladder, so the
-headline claim is "beats persistence, HAR, HARQ, SHAR and ridge" rather than just HAR.
+The lasting benefit is to the *benchmarks*: HARQ and SHAR now sit in the model ladder, so
+every result is quoted against a stronger bar than plain HAR. On the fixed out-of-sample
+split at 10 days:
+
+| model | market R² | sector R² |
+|---|---:|---:|
+| persistence | 0.149 | 0.216 |
+| HAR | 0.305 | 0.373 |
+| HARQ | 0.303 | 0.373 |
+| SHAR | 0.333 | 0.385 |
+| ridge | **0.428** | 0.457 |
+| gbm *(shipped)* | 0.412 | **0.463** |
+
+**And that table contains an unflattering result worth stating plainly: on the market panel,
+plain ridge regression beats the gradient-boosted model we ship** (R² 0.428 vs 0.412, MCC
+0.408 vs 0.381). The GBM wins on sectors, where it has 471k pooled training rows; on the
+market's ~5,400 rows the extra flexibility is not paying for itself. It is not a one-window
+fluke either: across the full 15-fold walk-forward ridge also wins on skill (+0.387 vs
++0.354, ahead in 10 of 15 folds). It is held rather than adopted only because the paired
+t-statistic is +1.45, below the t>2 bar this project set before any of these comparisons were
+run — the same bar that rejected the jump features. Switching it on a t of 1.45 would be
+exactly the post-hoc bar-moving the rest of this README refuses to do. It is the first thing
+to settle next, and it points the same way as everything else here: on thin data, simpler
+wins.
 
 **Pooled training** was the one substantive win, and it fixed a real problem: the sector
 model had 37k rows and now trains on 471k. Volatility dynamics are broadly shared across
