@@ -25,10 +25,14 @@ volradar/
     methods.py           methodology bake-off, paired against the incumbent
     events.py            did it flag real volatility spikes?
     decision.py          would acting on it have helped?
+  simulate/
+    dgp.py               synthetic markets with a KNOWN true volatility
+    validate.py          ceiling, model-vs-truth, placebo and leakage tests
+    scenarios.py         Monte Carlo strategy testing, incl. a perfect-foresight arm
   api/server.py          FastAPI — reads artifacts, computes nothing
   sentiment/             optional DistilBERT headline classifier (not a model input)
 frontend/                React + Vite dashboard
-tests/                   causality, embargo, metrics, API contract
+tests/                   causality, embargo, metrics, conformal, DGP, API contract
 ```
 
 ## Data flow
@@ -81,6 +85,15 @@ ETF. They answer different questions and have very different sample sizes — ~5
 versus ~54,000 — which matters, because the market model has far less data to fit and is
 correspondingly easier to overfit. Keeping them separate means that constraint is visible
 rather than averaged away.
+
+## Why there is a simulator
+
+Real data cannot answer "how much of our error is irreducible?", because true volatility is
+never observed. `simulate/` writes down a process, so σₜ is known and the same pipeline can
+be scored against truth and against the noisy proxy. It also provides the only honest test of
+the evaluation harness itself: run it on a market with no forecastable volatility and it must
+report nothing. That test is what caught the fact that skill-versus-persistence reads +0.43
+on pure noise — a property of the metric that is invisible on real data.
 
 ## Extending it
 

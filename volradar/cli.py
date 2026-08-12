@@ -7,6 +7,7 @@
     python -m volradar.cli methods    # methodology bake-off: which modelling changes help
     python -m volradar.cli events     # did it flag real volatility spikes?
     python -m volradar.cli decision   # would acting on it have helped?
+    python -m volradar.cli simulate   # validate the method on known-truth synthetic markets
     python -m volradar.cli train      # fit production models, write the snapshot
     python -m volradar.cli all        # everything above, in order
     python -m volradar.cli serve      # run the API + dashboard
@@ -72,6 +73,13 @@ def cmd_decision(args):
     run()
 
 
+def cmd_simulate(args):
+    from volradar.simulate.validate import main as validate
+    from volradar.simulate.scenarios import main as scenarios
+    validate()
+    scenarios()
+
+
 def cmd_train(args):
     from volradar.models.train import main as run
     run()
@@ -92,6 +100,7 @@ def cmd_all(args):
     _stage("methodology bake-off", cmd_methods, args)
     _stage("event study", cmd_events, args)
     _stage("decision simulation", cmd_decision, args)
+    _stage("known-truth simulation", cmd_simulate, args)
     _stage("train production models", cmd_train, args)
     print(f"\nAll artifacts in {config.REPORT_DIR}")
 
@@ -109,7 +118,7 @@ def cmd_serve(args):
 COMMANDS = {
     "fetch": cmd_fetch, "build": cmd_build, "oos": cmd_oos, "evaluate": cmd_evaluate,
     "ablation": cmd_ablation, "methods": cmd_methods, "select": cmd_select,
-    "events": cmd_events, "decision": cmd_decision,
+    "events": cmd_events, "decision": cmd_decision, "simulate": cmd_simulate,
     "train": cmd_train, "all": cmd_all, "serve": cmd_serve,
 }
 

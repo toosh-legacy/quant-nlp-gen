@@ -39,6 +39,13 @@ export function TrackRecord({ perf }) {
     ...(perf.conformal_market || []),
     ...(perf.conformal_sector || []),
   ];
+  const sim = perf.simulation || [];
+  const byExp = (name) => sim.find((s) => s.experiment === name);
+  const ceiling = byExp("ceiling");
+  const mvt = byExp("model_vs_truth");
+  const nullExp = byExp("null_no_predictability");
+  const shuffle = byExp("shuffled_target");
+  const scenarios = perf.simulation_scenarios || [];
 
   return (
     <>
@@ -177,6 +184,128 @@ export function TrackRecord({ perf }) {
           </p>
         </Card>
       </div>
+
+      <h3 className="section-title">Testing the test: simulated markets with a known answer</h3>
+      <p className="section-note">
+        On real data, true volatility is never observed — every metric above is scored
+        against <em>realized</em> volatility, which is only a noisy estimate of it. So the
+        whole pipeline is also run on synthetic markets generated from a written-down
+        process, where the true volatility is known exactly. That answers questions real
+        data cannot.
+      </p>
+
+      <div className="grid three">
+        <Card title="The accuracy ceiling" sub="How well could a PERFECT forecaster score?">
+          {ceiling && (
+            <>
+              <Row k="Perfect forecast, R² vs proxy" v={num(ceiling.perfect_r2_vs_proxy)} />
+              <Row k="Persistence baseline" v={num(ceiling.persistence_r2)} />
+              <p className="sub" style={{ margin: "14px 0 0" }}>
+                Even perfect knowledge of future volatility only scores{" "}
+                <strong>{num(ceiling.perfect_r2_vs_proxy)}</strong> against the noisy
+                yardstick — not 1.0. That is the number our real-data R² should be read
+                against, and it reframes 0.42 considerably.
+              </p>
+            </>
+          )}
+        </Card>
+
+        <Card title="Our error vs the yardstick's" sub="Same model, scored both ways">
+          {mvt && (
+            <>
+              <Row k="Scored vs the noisy proxy" v={num(mvt.r2_vs_proxy)} />
+              <Row k="Scored vs TRUE volatility" v={num(mvt.r2_vs_truth)} />
+              {ceiling && (
+                <Row
+                  k="Share of attainable captured"
+                  v={pct01(mvt.r2_vs_proxy / ceiling.perfect_r2_vs_proxy)}
+                  good
+                />
+              )}
+              <p className="sub" style={{ margin: "14px 0 0" }}>
+                About half the apparent error is noise in the measuring stick rather than a
+                failure of the model.
+              </p>
+            </>
+          )}
+        </Card>
+
+        <Card title="Does the harness lie?" sub="Two placebo tests it has to fail to pass">
+          {nullExp && (
+            <>
+              <Row k="No-signal market, R²" v={num(nullExp.r2_mean)} good={nullExp.r2_mean <= 0.02} />
+              <Row k="  same market, 'skill'" v={num(nullExp.skill_mean)} good={false} />
+            </>
+          )}
+          {shuffle && (
+            <Row k="Shuffled target, R²" v={num(shuffle.r2_mean)} good={shuffle.r2_mean <= 0.02} />
+          )}
+          <div className="callout" style={{ marginTop: 14 }}>
+            <strong>This changed how we read our own metrics.</strong> In a market built to
+            have <em>no</em> forecastable volatility, R² correctly reads negative — but
+            "skill vs persistence" still reads about <strong>+0.43</strong>. Both are right:
+            with constant volatility the persistence baseline is pure measurement noise, so
+            predicting the average beats it without forecasting anything. So skill vs
+            persistence <strong>cannot establish predictability on its own</strong> — it has
+            to be read next to R². The real results clear both bars.
+          </div>
+        </Card>
+      </div>
+
+      {scenarios.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <Card
+            title="Monte Carlo: would volatility targeting have paid, across many markets?"
+            sub="The real backtest is one sample; this runs the same strategy over simulated markets from the same process"
+          >
+            <div className="scroll-x">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Sizing rule</th>
+                    <th className="num">Mean Sharpe</th>
+                    <th className="num">Gap vs measurement</th>
+                    <th className="num">95% range</th>
+                    <th className="num">Win rate</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {scenarios.map((s) => (
+                    <tr key={s.arm} className={s.arm === "oracle_sized" ? "on" : ""}>
+                      <td>
+                        {{
+                          buy_and_hold: "Buy & hold",
+                          persistence_sized: "Sized on current vol",
+                          model_sized: "Sized on forecast",
+                          oracle_sized: "Sized on PERFECT foresight",
+                        }[s.arm] || s.arm}
+                      </td>
+                      <td className="num">{num(s.sharpe_mean)}</td>
+                      <td className={`num ${s.sharpe_gap_vs_persistence > 0 ? "good-txt" : "muted"}`}>
+                        {signed(s.sharpe_gap_vs_persistence, 3)}
+                      </td>
+                      <td className="num muted">
+                        [{signed(s.gap_ci_low, 2)}, {signed(s.gap_ci_high, 2)}]
+                      </td>
+                      <td className="num">{pct01(s.win_rate_vs_persistence)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="callout" style={{ marginTop: 14 }}>
+              <strong>The ceiling is the forecast, not the strategy.</strong> Perfect
+              foresight would have earned about <strong>+0.97</strong> Sharpe over sizing on
+              current volatility, and won in 100% of simulated markets — so volatility
+              targeting itself works very well when the input is good. Our forecast captured
+              only a few percent of that, winning 67% of markets with a range that still
+              spans zero — which matches the real backtest almost exactly. The honest reading:
+              the model is statistically accurate but not yet <em>sharp</em> enough for the
+              gain to show up reliably in money. That is a headroom result, not a dead end.
+            </div>
+          </Card>
+        </div>
+      )}
 
       <h3 className="section-title">Methods that were tried</h3>
       <p className="section-note">

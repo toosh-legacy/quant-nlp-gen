@@ -28,7 +28,7 @@ import pandas as pd
 from volradar import config
 from volradar.backtest import metrics as M
 from volradar.features.assemble import all_features, build_pooled_panel, load_panel
-from volradar.features.core import CORE_FEATURES, JUMP_FEATURES
+from volradar.features.core import CORE_FEATURES, JUMP_FEATURES, SEMIVAR_FEATURES
 from volradar.models import dataset as D
 from volradar.models import estimators as E
 
@@ -82,6 +82,27 @@ class WithJumps(Incumbent):
 
     def features(self, panel):
         return all_features(panel) + JUMP_FEATURES
+
+
+class WithSemivar(Incumbent):
+    """Adds the signed-semivariance block to the incumbent's features.
+
+    Motivated by a clean replication rather than a hunch: fitted as its own model, SHAR
+    (Patton & Sheppard 2015) beat plain HAR on both panels — market t=+2.55 with 6/6 fold
+    wins, sector t=+2.30. The incumbent already carries a single downside-volatility term,
+    but not the up/down *split* or the asymmetry between them, which is where that result
+    says the information lives.
+    """
+
+    def features(self, panel):
+        return all_features(panel) + SEMIVAR_FEATURES
+
+
+class SemivarJumps(Incumbent):
+    """Both literature blocks together, to check they are not substitutes."""
+
+    def features(self, panel):
+        return all_features(panel) + SEMIVAR_FEATURES + JUMP_FEATURES
 
 
 class Pooled(Method):
@@ -206,15 +227,134 @@ class HarGbmAverage(Incumbent):
         return 0.5 * gbm + 0.5 * har
 
 
+class RollingRefit(Method):
+    """Rolling training window, re-estimated frequently — the fitting scheme, not the model.
+
+    Audrino & Chassot (IJF 2025, "HARd to Beat") tested 1,445 stocks and found the HAR
+    model exceptionally hard to beat *when it is re-estimated in a rolling window of roughly
+    two and a half to four years*, and that machine-learning models failed to surpass it once
+    the linear benchmark was fitted that way. Their point is that the fitting scheme — window
+    length and re-estimation frequency — matters more than the model class, and is routinely
+    overlooked.
+
+    This project used the overlooked scheme: an expanding window re-estimated once a year.
+    An expanding window weights 2008 as heavily as last month; annual re-estimation means a
+    December forecast is made by a model that last saw data eleven months earlier. This
+    method tests the alternative directly, refitting every `refit_days` on the trailing
+    `window_days` only.
+    """
+    window_days = 756          # ~3 years, the middle of the paper's range
+    refit_days = 21            # monthly re-estimation
+    estimator = "gbm"
+
+    def fit_predict(self, panel, h, cutoff, test, ctx):
+        feats = self.features(panel)
+        sub = ctx["sub"]
+        test = test.sort_values("date")
+        preds = np.full(len(test), np.nan)
+        dates = test["date"].to_numpy()
+
+        # Re-estimate at each chunk boundary on the trailing window ending at that date.
+        starts = list(range(0, len(test), self.refit_days))
+        for s in starts:
+            e = min(s + self.refit_days, len(test))
+            asof = pd.Timestamp(dates[s])
+            train = D.embargoed_train(sub, h, asof)
+            if self.window_days:
+                train = train[train["date"] >= asof - pd.Timedelta(days=int(
+                    self.window_days * 1.45))]      # calendar days ~ trading days / 0.69
+            if len(train) < 250:
+                continue
+            if self.estimator == "gbm":
+                m = E.fit_gbm(train, feats, h, ctx["params"])
+            else:
+                m = dict(E.LADDER)[self.estimator](train, feats, h)
+            preds[s:e] = m.predict(test.iloc[s:e])
+
+        # Any chunk too thin to fit falls back to the persistence baseline rather than NaN.
+        missing = np.isnan(preds)
+        if missing.any():
+            preds[missing] = test[config.persist_col(h)].to_numpy(float)[missing]
+        return preds
+
+
+class RollingHAR(RollingRefit):
+    """The paper's actual recommendation: plain linear HAR, rolling window, frequent refit."""
+    estimator = "HAR"
+
+
+class RollingHAR2y(RollingHAR):
+    window_days = 504
+
+
+class RollingHAR4y(RollingHAR):
+    window_days = 1008
+
+
+class ExpandingHARFreq(RollingHAR):
+    """Frequent re-estimation but an expanding window — isolates which lever matters."""
+    window_days = 0
+
+
+class HARQMethod(Incumbent):
+    """HAR with the measurement-error correction (Bollerslev, Patton & Quaedvlieg 2016)."""
+
+    def fit_predict(self, panel, h, cutoff, test, ctx):
+        train = D.embargoed_train(ctx["sub"], h, cutoff)
+        return E.fit_harq(train, None, h).predict(test)
+
+
+class SHARMethod(Incumbent):
+    """HAR on signed semivariance (Patton & Sheppard 2015)."""
+
+    def fit_predict(self, panel, h, cutoff, test, ctx):
+        train = D.embargoed_train(ctx["sub"], h, cutoff)
+        return E.fit_shar(train, None, h).predict(test)
+
+
+class RollingHARQ(RollingRefit):
+    """The two strongest ideas combined: HARQ, rolling window, monthly refit."""
+    estimator = "HARQ"
+
+
+class GbmPlusRollingHAR(RollingRefit):
+    """Average the incumbent GBM with a rolling-refit HAR.
+
+    Combination is the most reliably useful idea in forecasting, and these two err
+    differently: the GBM is flexible but fitted on stale, equally-weighted history, while
+    the rolling HAR is rigid but always current.
+    """
+    estimator = "HAR"
+
+    def fit_predict(self, panel, h, cutoff, test, ctx):
+        rolling = super().fit_predict(panel, h, cutoff, test, ctx)
+        feats = self.features(panel)
+        train = D.embargoed_train(ctx["sub"], h, cutoff)
+        gbm = E.fit_gbm(train, feats, h, ctx["params"]).predict(test.sort_values("date"))
+        return 0.5 * rolling + 0.5 * gbm
+
+
 METHODS: list[Method] = [
     Incumbent("incumbent", "GBM on core features, this panel only (what ships today)"),
     WithJumps("jumps", "+ bipower variation / jump-share block"),
+    WithSemivar("semivar", "+ signed semivariance block (SHAR insight)"),
+    SemivarJumps("semivar+jumps", "+ both literature blocks"),
     Pooled("pooled", "train on all 91 series"),
     PooledJumps("pooled+jumps", "train on all 91 series, with jump block"),
     PooledPlusOwn("pooled+own", "pooled fit + panel-specific residual correction"),
     ShrinkToPersistence("shrink", "blend with persistence, weight fitted on training data"),
     RecencyWeighted("recency", "exponential sample weighting, 3-year half-life"),
     HarGbmAverage("har+gbm", "equal-weight average of HAR and GBM"),
+    # --- literature-backed additions ---------------------------------------------------
+    HARQMethod("harq", "HAR + realized-quarticity correction (Bollerslev/Patton/Quaedvlieg)"),
+    SHARMethod("shar", "HAR on signed semivariance (Patton/Sheppard)"),
+    RollingRefit("roll-gbm-3y", "GBM, 3-year rolling window, monthly refit"),
+    RollingHAR("roll-har-3y", "HAR, 3-year rolling window, monthly refit"),
+    RollingHAR2y("roll-har-2y", "HAR, 2-year rolling window, monthly refit"),
+    RollingHAR4y("roll-har-4y", "HAR, 4-year rolling window, monthly refit"),
+    ExpandingHARFreq("exp-har-freq", "HAR, expanding window, monthly refit"),
+    RollingHARQ("roll-harq-3y", "HARQ, 3-year rolling window, monthly refit"),
+    GbmPlusRollingHAR("gbm+roll-har", "average of GBM and rolling-refit HAR"),
 ]
 
 

@@ -57,6 +57,57 @@ as 14/15.
 
 ---
 
+## Testing the test: simulated markets with a known answer
+
+Every metric above is scored against *realized* volatility — a noisy estimate of the true
+volatility, which is never observed. So the pipeline is also run on synthetic markets from a
+written-down stochastic-volatility process (persistence, leverage, jumps), where σₜ is known
+exactly. Three things fall out that real data cannot give:
+
+**1. The accuracy ceiling.** A forecaster with *perfect* knowledge of future volatility
+scores **R² = 0.887** against the noisy realized proxy — not 1.0. That is the number our
+real-data R² should be read against. Scored against the true target instead of the proxy,
+the same model goes from R² 0.455 to **0.593**: roughly half the apparent error is noise in
+the yardstick, not failure of the model. It captures about **51%** of what was attainable.
+
+**2. Our primary metric can lie on its own — and that changed how this README reports.**
+In a market built to have *no* forecastable volatility, R² correctly reads **−0.19**, but
+*skill versus persistence* still reads **+0.43**. Both are correct: with constant
+volatility, the persistence baseline is nothing but measurement noise from a short window,
+so predicting the unconditional mean beats it without forecasting anything. The consequence:
+**skill versus persistence cannot establish predictability on its own** — it measures "did we
+beat a noisy estimator", a lower bar than "is there signal here". R² is what establishes
+signal. The real results clear both bars (market R² 0.421 *and* skill 0.349), so the
+conclusions stand — but the two must be read together, and that was not obvious before
+simulating a world where one of them misleads.
+
+**3. A real leakage test.** With the target block-shuffled to destroy any link to the
+features, the harness reports R² **−1.32** (worst fold −0.20). It finds nothing when there is
+nothing, which is what makes the positive results worth reading.
+
+### Monte Carlo: would acting on it have paid?
+
+The real backtest is one sample. Running the same volatility-targeting strategy across 60
+simulated markets from the same process — including an arm no backtest can run, sizing on
+**perfect foresight**:
+
+| sizing rule | mean Sharpe | gap vs measurement | 95% range | wins |
+|---|---:|---:|---:|---:|
+| buy & hold | 0.340 | −0.204 | — | 28% |
+| sized on current vol | 0.544 | 0.000 | — | — |
+| **sized on forecast** | 0.581 | **+0.038** | [−0.32, +0.29] | 67% |
+| sized on **perfect foresight** | **1.513** | **+0.969** | [+0.65, +1.31] | **100%** |
+
+This resolves the open question from the real-data decision study. The forecast arm's
+simulated gap (+0.038, spans zero) matches the real backtest's (+0.046, spans zero) almost
+exactly — so that inconclusive result was *the expected outcome given the model's accuracy*,
+not bad luck. And the oracle arm shows **the ceiling is the forecast, not the strategy**:
+volatility targeting pays handsomely (+0.97 Sharpe, wins 100%) when the input is sharp
+enough. Ours captures only a few percent of that. That is a headroom result — the economic
+payoff exists, and it is gated on forecast sharpness, not on the trading rule.
+
+---
+
 ## Methodology: what was tried, what survived
 
 Eight modelling methods were tested against the incumbent on identical pre-test folds. The
@@ -74,6 +125,40 @@ exactly backwards.
 | HAR + GBM average | equal-weight forecast combination | worse at 10d (t=−2.63 on sectors) |
 | **adaptive conformal** | online-corrected prediction intervals | **adopted (both panels)** |
 | **QLIKE** | volatility-native loss, robust to a noisy proxy | **adopted as a reported metric** |
+| HARQ | realized-quarticity correction (Bollerslev/Patton/Quaedvlieg 2016) | no gain here — *see below* |
+| SHAR | signed semivariance (Patton/Sheppard 2015) | replicates vs HAR, redundant in ours |
+| rolling window + frequent refit | Audrino/Chassot 2025, "HARd to Beat" | did not transfer |
+
+### What the literature said, and what actually transferred
+
+Three well-cited results were implemented and tested properly rather than cited and assumed.
+
+**SHAR replicates.** Splitting realized variance into up-day and down-day components beat
+plain HAR on both panels — market **t=+2.55 with 6/6 fold wins**, sector t=+2.30. The
+published effect is real in our data. But adding the same block to the *shipped* model
+changed nothing (t=+0.36 at 6 folds, −0.62 at 12): the GBM already carries a downside-vol
+term and range-based estimators, so the information was there. A replication and a
+redundancy at once.
+
+**HARQ does not, and the reason is structural.** It was worth t=+0.48 on the market panel and
+−0.45 on sectors. HARQ corrects attenuation bias caused by measurement error in RV estimated
+from *intraday* returns, using realized quarticity to gauge that error. We have daily bars,
+so realized quarticity is barely estimable and the correction has nothing to work with. This
+is a non-replication with a known cause, not a contradiction of the paper.
+
+**The rolling-window result did not transfer.** Audrino & Chassot found across 1,445 stocks
+that HAR re-estimated in a 2.5–4 year rolling window is exceptionally hard to beat, and that
+the fitting scheme matters more than the model class. Our project used the scheme they call
+overlooked — expanding window, annual re-estimation — so this looked like the single most
+promising fix. Tested at 2, 3 and 4-year windows with monthly refits, every variant was
+*worse* (t = −2.31 to −2.45), and holding the model and features fixed while changing only
+the window (GBM rolling vs expanding) also lost (t=−1.17). Two plausible reasons: their
+comparison is on RV and VIX inputs, while our edge comes from range-based estimators that
+recover intraday information from daily bars; and they forecast one day ahead for single
+stocks, where we forecast a ten-day average for an index. Different problem, different answer.
+
+The lasting benefit is to the *benchmarks*: HARQ and SHAR now sit in the model ladder, so the
+headline claim is "beats persistence, HAR, HARQ, SHAR and ridge" rather than just HAR.
 
 **Pooled training** was the one substantive win, and it fixed a real problem: the sector
 model had 37k rows and now trains on 471k. Volatility dynamics are broadly shared across
@@ -216,6 +301,7 @@ python -m volradar.cli methods    # methodology bake-off (paired, pre-test folds
 python -m volradar.cli select     # which factor families ship
 python -m volradar.cli events     # did it flag real volatility spikes?
 python -m volradar.cli decision   # would acting on it have helped?
+python -m volradar.cli simulate   # validate the method on known-truth synthetic markets
 python -m volradar.cli train      # production fit + dashboard snapshot
 python -m volradar.cli all        # all of the above
 python -m volradar.cli serve      # API + dashboard
@@ -225,10 +311,10 @@ Every stage caches and is idempotent; `--force` rebuilds one from scratch. To re
 dashboard to the latest close without re-running the backtest:
 `fetch --force && build --force && train`.
 
-**Tests:** `pytest -q` — 36 tests covering causality, embargo, split boundaries, metric
+**Tests:** `pytest -q` — 43 tests covering causality, embargo, split boundaries, metric
 correctness against hand-computed values, conformal-interval causality (its width is derived
-from realized errors, so it is one edit from being the subtlest lookahead bug here), and the
-API contract.
+from realized errors, so it is one edit from being the subtlest lookahead bug here), the
+synthetic-market generator, and the API contract.
 
 **Data:** Yahoo Finance via `yfinance` — free, no API key. Prices 2005 → today.
 

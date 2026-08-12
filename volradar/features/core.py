@@ -49,6 +49,21 @@ CORE_FEATURES = [
 # over-extrapolates yesterday's one-off gap.
 JUMP_FEATURES = ["log_bpv_m", "jump_share_m", "log_jump_d", "rq_ratio"]
 
+# Measurement-error and signed-semivariance blocks, for the HARQ and SHAR models.
+#
+# `rq_sqrt` feeds HARQ; the semivariance block feeds SHAR.
+#
+# HARQ (Bollerslev, Patton & Quaedvlieg 2016, J. Econometrics): realized volatility is an
+# *estimate* of true volatility, so regressing on it suffers attenuation bias — and the
+# amount of attenuation varies with how noisy today's estimate is. Realized quarticity
+# estimates that noise, so letting the daily coefficient depend on it makes the model
+# responsive when the signal is clean and cautious when it is not.
+#
+# SHAR (Patton & Sheppard 2015): splitting realized variance into the parts contributed by
+# up-days and down-days. Downside variance forecasts future volatility considerably better
+# than upside variance — the leverage effect, measured directly rather than proxied.
+SEMIVAR_FEATURES = ["log_rs_down_m", "log_rs_up_m", "semivar_skew_m"]
+
 
 def _roll_rv(g: pd.core.groupby.generic.SeriesGroupBy, window: int) -> pd.Series:
     """Root-mean-square of a squared-return column over a trailing window, per ticker."""
@@ -85,6 +100,27 @@ def add_jump_features(out: pd.DataFrame) -> pd.DataFrame:
     # High values mean the realized-vol estimate itself is noisy and should be trusted less.
     rq = df.groupby("ticker", observed=True)["_r4"].transform(lambda s: s.rolling(21).mean())
     df["rq_ratio"] = np.log(rq.clip(lower=EPS)) - 2.0 * np.log(rv_m.clip(lower=EPS))
+
+    # --- HARQ measurement-error term ------------------------------------------------
+    # Realized quarticity estimates the variance of the realized-variance estimator. The
+    # (n/3) scaling is the standard estimator; with daily returns the "n" is the rolling
+    # window. HARQ uses its square root, which is the natural scale of a standard error.
+    rq_raw = (21.0 / 3.0) * df.groupby("ticker", observed=True)["_r4"].transform(
+        lambda s: s.rolling(21).mean())
+    df["rq_sqrt"] = np.sqrt(np.sqrt(rq_raw.clip(lower=0.0)))
+
+    # --- SHAR signed semivariance ----------------------------------------------------
+    # Realized variance split by the sign of the return that produced it. Down-variance is
+    # the component that carries the forecasting power.
+    df["_r2_up"] = np.where(df["ret"] > 0, df["_r2"], 0.0)
+    rs_down = df.groupby("ticker", observed=True)["_r2_down"].transform(
+        lambda s: s.rolling(21).mean())
+    rs_up = df.groupby("ticker", observed=True)["_r2_up"].transform(
+        lambda s: s.rolling(21).mean())
+    df["log_rs_down_m"] = np.log(np.sqrt(rs_down.clip(lower=0.0)) + EPS)
+    df["log_rs_up_m"] = np.log(np.sqrt(rs_up.clip(lower=0.0)) + EPS)
+    # Asymmetry: how much more of the variance came from falling days than rising ones.
+    df["semivar_skew_m"] = df["log_rs_down_m"] - df["log_rs_up_m"]
     return df
 
 
@@ -156,11 +192,3 @@ def build_core(df: pd.DataFrame, horizons: list[int] | None = None,
 
     return out.drop(columns=[c for c in out.columns if c.startswith("_")])
 
-
-def annualized_vol(log_rv: pd.Series | np.ndarray) -> np.ndarray:
-    """Convert a log daily-RV value to an annualized percentage — the unit humans read.
-
-    The model works in log daily realized vol because that is where the statistics are
-    well-behaved; every number shown in the dashboard passes through here first.
-    """
-    return np.exp(np.asarray(log_rv, dtype=float)) * np.sqrt(config.TRADING_DAYS) * 100.0

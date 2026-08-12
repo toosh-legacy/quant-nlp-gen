@@ -21,7 +21,6 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"           # downloaded price/macro series, never modified
 BUILD_DIR = DATA_DIR / "build"       # derived feature panels
-ARTIFACT_DIR = DATA_DIR / "artifacts"  # trained models + their metadata
 REPORT_DIR = DATA_DIR / "reports"    # backtest outputs consumed by the API/frontend
 
 # ---------------------------------------------------------------------------
@@ -191,5 +190,5 @@ def label_date_col(h: int) -> str:
 
 
 def ensure_dirs() -> None:
-    for d in (RAW_DIR, BUILD_DIR, ARTIFACT_DIR, REPORT_DIR):
+    for d in (RAW_DIR, BUILD_DIR, REPORT_DIR):
         d.mkdir(parents=True, exist_ok=True)

@@ -113,10 +113,63 @@ def tune_gbm(fit_df, val_df, features: list[str], h: int, quiet: bool = False) -
     return best
 
 
+class FittedHARQ(Fitted):
+    """HAR with a measurement-error-dependent daily coefficient.
+
+    The daily coefficient becomes time-varying:
+
+        alpha_1,t = alpha_d + alpha_Q * (sqrt(RQ)_t - mean)
+
+    implemented by handing the linear model an extra interaction column. When realized
+    quarticity is high — today's volatility estimate is noisy — alpha_Q (typically negative)
+    pulls the daily term down, so the forecast leans on the smoother weekly and monthly
+    components instead. When the estimate is clean it leans in.
+
+    The RQ mean and scale come from the TRAINING rows only; using full-sample moments here
+    would leak the future into a standardisation, which is the quiet way this model gets
+    reported wrong.
+    """
+
+    def predict(self, df):
+        X = _harq_design(df, self.params["rq_mu"], self.params["rq_sd"])
+        return np.asarray(self.estimator.predict(self.scaler.transform(X)), dtype=float)
+
+
+def _harq_design(df, mu: float, sd: float) -> np.ndarray:
+    base = df[HAR_COLS].to_numpy(float)
+    z = ((df["rq_sqrt"].to_numpy(float) - mu) / sd).reshape(-1, 1)
+    interaction = base[:, [0]] * z          # daily lag x standardised sqrt(RQ)
+    return np.hstack([base, interaction])
+
+
+def fit_harq(train, _features, h: int) -> Fitted:
+    from sklearn.linear_model import Ridge
+    from sklearn.preprocessing import StandardScaler
+
+    mu = float(train["rq_sqrt"].mean())
+    sd = float(train["rq_sqrt"].std()) or 1.0
+    X = _harq_design(train, mu, sd)
+    y = train[config.fwd_col(h)].to_numpy(float)
+    sc = StandardScaler().fit(X)
+    est = Ridge(alpha=1.0).fit(sc.transform(X), y)
+    return FittedHARQ(name="HARQ", columns=HAR_COLS + ["rq_sqrt"], estimator=est,
+                      scaler=sc, params={"rq_mu": mu, "rq_sd": sd})
+
+
+SHAR_COLS = ["log_rs_down_m", "log_rs_up_m", "log_rv_w", "log_rv_m", "log_rv_q"]
+
+
+def fit_shar(train, _features, h: int) -> Fitted:
+    """HAR with realized variance split into its down-day and up-day components."""
+    return _fit_ridge(train, SHAR_COLS, h, "SHAR")
+
+
 # The ladder, in reporting order.
 LADDER = [
     ("persistence", fit_persistence),
     ("HAR", fit_har),
+    ("HARQ", fit_harq),
+    ("SHAR", fit_shar),
     ("ridge", fit_ridge),
     ("gbm", fit_gbm),
 ]

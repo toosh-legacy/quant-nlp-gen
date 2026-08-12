@@ -173,6 +173,8 @@ def performance():
                        ("method_bakeoff", "method_bakeoff.csv"),
                        ("conformal_market", "conformal_market.csv"),
                        ("conformal_sector", "conformal_sector.csv"),
+                       ("simulation", "simulation_validation.csv"),
+                       ("simulation_scenarios", "simulation_scenarios.csv"),
                        ("fixed_split", "fixed_split.csv")]:
         try:
             out[key] = _records(_report(fname))
