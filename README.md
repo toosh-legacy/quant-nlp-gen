@@ -61,6 +61,13 @@ the simplest model. Realized volatility turns out to be a remarkably complete su
 market's own risk state, and the signals that look independent are largely reflections of
 it. All four families remain implemented and are re-tested on every run.
 
+The two ends of that spectrum are worth naming. **The VIX was the closest call**: in the
+leave-one-out ablation it was worth **+0.075** R² on the market panel, easily the best of
+the four — it simply did not clear the one-standard-error bar on the selection metric, and
+that bar was set before the results were seen. **Macro was the clearest failure**, costing
+0.05–0.07 R² wherever it appeared; its levels are non-stationary, so the model learns
+regime-specific values that do not carry forward.
+
 **The 21-day horizon is not shipped.** It was built and measured, but in walk-forward it beat
 persistence in only **12 of 15** years for the market panel, with a −1.29 miss in an
 ultra-calm year. Every model tested — including plain HAR — extrapolates a volatility floor
