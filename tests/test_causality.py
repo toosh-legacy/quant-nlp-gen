@@ -16,7 +16,12 @@ import pandas as pd
 import pytest
 
 from volradar import config
-from volradar.features.core import CORE_FEATURES, build_core
+from volradar.features.core import (CORE_FEATURES, JUMP_FEATURES, RANGE_EXT_FEATURES,
+                                    SEMIVAR_FEATURES, build_core)
+
+# Every own-history block, not just the shipped one. A block that is only a candidate today
+# can be selected tomorrow, and the lookahead guarantee has to already hold when it is.
+ALL_OWN_FEATURES = CORE_FEATURES + JUMP_FEATURES + SEMIVAR_FEATURES + RANGE_EXT_FEATURES
 
 
 def _synthetic(n: int = 400, seed: int = 0) -> pd.DataFrame:
@@ -53,12 +58,31 @@ def test_no_lookahead_in_features():
 
     # Compare every row except the tampered one itself.
     mask = ~((f_base["ticker"] == "AAA") & (f_base["date"] == base.loc[last, "date"]))
-    a = f_base.loc[mask, CORE_FEATURES].to_numpy(float)
-    b = f_tamp.loc[mask, CORE_FEATURES].to_numpy(float)
+    a = f_base.loc[mask, ALL_OWN_FEATURES].to_numpy(float)
+    b = f_tamp.loc[mask, ALL_OWN_FEATURES].to_numpy(float)
 
     both_nan = np.isnan(a) & np.isnan(b)
     assert np.allclose(a[~both_nan], b[~both_nan], equal_nan=False), \
         "a feature on a past row changed when a FUTURE bar was modified — lookahead bias"
+
+
+def test_yang_zhang_uses_the_overnight_gap():
+    """Yang-Zhang's whole point is the piece a high-low range cannot see.
+
+    Moving one day's OPEN away from the previous close, while leaving high, low and close
+    alone, changes the overnight gap and nothing else. If `log_yz_m` does not move, the
+    overnight term is not wired in and the estimator is a slower Rogers-Satchell.
+    """
+    base = _synthetic()
+    tampered = base.copy()
+    idx = tampered.index[tampered["ticker"] == "AAA"][100]
+    tampered.loc[idx, "open"] = base.loc[idx, "low"]
+
+    a = build_core(base)
+    b = build_core(tampered)
+    m = (a["ticker"] == "AAA")
+    moved = (a.loc[m, "log_yz_m"] - b.loc[m, "log_yz_m"]).abs().max()
+    assert moved > 1e-9, "log_yz_m ignored a change in the overnight gap"
 
 
 def test_target_does_depend_on_future():

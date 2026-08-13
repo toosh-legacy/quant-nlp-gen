@@ -1,6 +1,6 @@
 import React from "react";
 import { Card } from "./ui";
-import { num, pct01, signed } from "../format";
+import { foldsPhrase, num, pct01, signed } from "../format";
 
 // Which bake-off candidates were actually adopted into the shipped pipeline. Kept explicit
 // so the table cannot drift out of step with config.TRAINING_SOURCE.
@@ -35,6 +35,9 @@ export function TrackRecord({ perf }) {
   const sig = (perf.decision_significance || [])[0];
   const detected = events.filter((e) => e.detected).length;
   const bakeoff = perf.method_bakeoff || [];
+  const alarm = perf.alarm || [];
+  const settled = perf.settled || [];
+  const intraday = perf.intraday_study || [];
   const conformal = [
     ...(perf.conformal_market || []),
     ...(perf.conformal_sector || []),
@@ -94,10 +97,16 @@ export function TrackRecord({ perf }) {
         <div className="callout" style={{ marginTop: 16 }}>
           <strong>What we withheld.</strong> A {perf.horizons_withheld.join(", ")}-day horizon
           was built and tested but is <strong>not shown</strong> in the dashboard. In
-          walk-forward it beat the persistence baseline in only 8 of 13 years, with a
-          catastrophic miss in the ultra-calm 2023 market, and the simpler HAR model was no
-          more reliable. Every model tested extrapolates a volatility floor that very quiet
-          years fall through. The measurement is kept; the number is not shipped.
+          walk-forward it beat the persistence baseline in only{" "}
+          {foldsPhrase(perf, "market", perf.horizons_withheld[0]) || "a minority of"} years on
+          the market panel, with a large miss in an ultra-calm year, and the simpler HAR model
+          was no more reliable. Every model tested extrapolates a volatility floor that very
+          quiet years fall through. The sector panel at that horizon is stable
+          {foldsPhrase(perf, "sector", perf.horizons_withheld[0])
+            ? ` (${foldsPhrase(perf, "sector", perf.horizons_withheld[0])} years)`
+            : ""}
+          , but the two are shown together at one horizon and the market half is the half that
+          fails. The measurement is kept; the number is not shipped.
         </div>
       )}
 
@@ -313,7 +322,17 @@ export function TrackRecord({ perf }) {
         function, feature block or combination rule — scored on identical pre-test folds and
         compared to the incumbent fold by fold. Paired comparison matters here: judging two
         separate averages lets an <em>unstable</em> incumbent raise its own replacement bar,
-        which is backwards.
+        which is backwards. A method is adopted only if it clears t&nbsp;&gt;&nbsp;2 on{" "}
+        <em>both</em> skill and QLIKE, at <em>both</em> an annual and a semi-annual fold
+        slicing — a result that appears at one calendar cut and vanishes at another is not a
+        result.
+      </p>
+      <p className="section-note">
+        The <strong>In MCS</strong> column is the more careful statement. Rather than crowning
+        the lowest loss in a table whose top entries sit within noise of each other, the Model
+        Confidence Set reports which methods cannot be <em>statistically separated</em> from
+        the best one. Everything marked “ruled out” is genuinely ruled out; everything else is
+        a tie the data cannot break.
       </p>
 
       <div className="grid two">
@@ -326,11 +345,14 @@ export function TrackRecord({ perf }) {
                   <th className="num">Panel</th>
                   <th className="num">Skill</th>
                   <th className="num">QLIKE gain</th>
+                  <th className="num" title="Hansen-Lunde-Nason Model Confidence Set: methods that cannot be statistically separated from the best one, under QLIKE">
+                    In MCS
+                  </th>
                   <th className="num">Adopted</th>
                 </tr>
               </thead>
               <tbody>
-                {bakeoff.filter((b) => b.horizon === 10).map((b, i) => (
+                {bakeoff.filter((b) => b.horizon === 10 && (b.granularity ?? "annual") === "annual").map((b, i) => (
                   <tr key={i} className={ADOPTED[`${b.panel}:${b.method}`] ? "on" : ""}>
                     <td>
                       {b.method}
@@ -341,6 +363,13 @@ export function TrackRecord({ perf }) {
                     <td className="num muted">{b.panel}</td>
                     <td className="num">{num(b.skill_mean, 3)}</td>
                     <td className="num muted">{num(b.qlike_gain, 3)}</td>
+                    <td className="num">
+                      {b.in_mcs === undefined || b.in_mcs === null
+                        ? <span className="muted">—</span>
+                        : b.in_mcs
+                        ? <span className="good-txt">yes</span>
+                        : <span className="muted">ruled out</span>}
+                    </td>
                     <td className="num">
                       {b.method === "incumbent"
                         ? "—"
@@ -359,6 +388,111 @@ export function TrackRecord({ perf }) {
             features looked significant on annual folds and vanished on semi-annual ones, so
             they were rejected: a result that depends on how you slice the calendar is not a
             result.
+          </p>
+        </Card>
+
+        <Card title="A dedicated alarm head" sub="Can a model built for stress beat thresholding the mean forecast?">
+          <p className="sub" style={{ marginTop: 0 }}>
+            The mean forecast is accurate about the volatility <em>level</em> and warns late
+            about spikes, for a structural reason: squared error estimates a conditional mean,
+            and the mean of a right-skewed variable sits below the outcomes that matter. So a
+            separate head was built with its own binary target and its own metric — MCC on
+            “will the next 10 days be stressed?”, never R², because a quantile forecast does
+            not estimate a mean and recall alone is gamed by alarming every day.
+          </p>
+          <div className="scroll-x">
+            <table>
+              <thead>
+                <tr>
+                  <th>Rule</th>
+                  <th className="num">Panel</th>
+                  <th className="num">MCC</th>
+                  <th className="num">Stress recall</th>
+                  <th className="num">Precision</th>
+                  <th className="num">t</th>
+                </tr>
+              </thead>
+              <tbody>
+                {alarm.filter((a) => a.granularity === "annual").map((a, i) => (
+                  <tr key={i}>
+                    <td>{a.rule}</td>
+                    <td className="num muted">{a.panel}</td>
+                    <td className="num">{num(a.alarm_mcc, 3)}</td>
+                    <td className="num">{pct01(a.stressed_recall)}</td>
+                    <td className="num muted">{pct01(a.precision)}</td>
+                    <td className="num muted">
+                      {a.testable === false ? "untested" : num(a.t, 2)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="callout" style={{ marginTop: 14 }}>
+            <strong>It is not shipped, and “not established” is not the same as “does not
+            work”.</strong> On sectors the high-quantile rule catches far more stress than the
+            rule in production, and the paired advantage is stable — but it clears the bar at
+            only the finest of three fold slicings, and the market panel contradicts it
+            outright. Rows marked <em>untested</em> are folds with too little stress in them to
+            rank anything; that is a missing measurement, not a failed one.
+          </div>
+        </Card>
+
+        <Card title="Open questions, settled" sub="Decided on pre-test folds, at two fold granularities">
+          <div className="scroll-x">
+            <table>
+              <thead>
+                <tr>
+                  <th>Candidate</th>
+                  <th className="num">Panel</th>
+                  <th className="num">Metric</th>
+                  <th className="num">Folds</th>
+                  <th className="num">t</th>
+                </tr>
+              </thead>
+              <tbody>
+                {settled.map((r, i) => (
+                  <tr key={i}>
+                    <td>{r.model}</td>
+                    <td className="num muted">{r.panel}</td>
+                    <td className="num muted">{r.metric}</td>
+                    <td className="num muted">{r.folds}</td>
+                    <td className={`num ${r.t > 2 ? "good-txt" : ""}`}>{num(r.t, 2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
+        <Card title="Does intraday data pay?" sub="Scoped study on the Oxford-Man realized library, 2000-2016">
+          <div className="scroll-x">
+            <table>
+              <thead>
+                <tr>
+                  <th>Variant</th>
+                  <th className="num">R²</th>
+                  <th className="num">Skill</th>
+                  <th className="num">Direction</th>
+                </tr>
+              </thead>
+              <tbody>
+                {intraday.map((r, i) => (
+                  <tr key={i}>
+                    <td>{r.variant}</td>
+                    <td className="num">{num(r.r2, 3)}</td>
+                    <td className="num muted">{num(r.skill, 3)}</td>
+                    <td className="num muted">{pct01(r.dir_accuracy)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="sub" style={{ margin: "14px 0 0" }}>
+            Intraday data helps as an <strong>input</strong> and hurts as a <strong>target</strong>.
+            A 10-day average of daily variances has already removed most of the measurement
+            noise a 5-minute estimator would remove, so the precision buys little at this
+            horizon. Buying it is not justified for this product.
           </p>
         </Card>
 

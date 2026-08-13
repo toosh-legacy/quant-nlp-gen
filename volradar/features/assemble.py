@@ -18,7 +18,8 @@ import pandas as pd
 from volradar import config
 from volradar.data import fetch
 from volradar.features import factors
-from volradar.features.core import CORE_FEATURES, build_core
+from volradar.features.core import (CORE_FEATURES, JUMP_FEATURES, RANGE_EXT_FEATURES,
+                                    SEMIVAR_FEATURES, build_core)
 
 # Sector-panel-only columns: where this sector sits within the sector cross-section that
 # day. The earlier study found the cross-sectional block was what lifted R^2 from ~0.2 to
@@ -28,6 +29,85 @@ SECTOR_REL_FEATURES = ["sec_rv_rel", "sec_rv_rank", "sec_beta_63"]
 MARKET_PANEL = config.BUILD_DIR / "panel_market.parquet"
 SECTOR_PANEL = config.BUILD_DIR / "panel_sector.parquet"
 POOLED_PANEL = config.BUILD_DIR / "panel_pooled.parquet"
+
+# `sector_rel` is the one family that is not defined for every row: a single stock has no
+# position within the *sector* cross-section. Anything listed here narrows the pooled
+# training set to the sector ETFs when it is selected — see `training_frame`.
+SECTOR_ONLY_FAMILIES = {"sector_rel"}
+
+
+def _merge_date_blocks(base: pd.DataFrame, blocks: list[pd.DataFrame]) -> pd.DataFrame:
+    """Left-join date-level factor blocks onto a panel keyed by date (+ ticker)."""
+    out = base
+    for b in blocks:
+        out = out.merge(b, on="date", how="left")
+    return out
+
+
+# Building the raw series and the per-series core blocks is the expensive part, and both
+# panel builders need the same pieces. Caching them for the life of the process keeps
+# `build` from doing all of it twice.
+_SOURCES: dict | None = None
+_POOLED: pd.DataFrame | None = None
+
+
+def _sources(force: bool = False) -> dict:
+    """Raw series, per-family core blocks, and the date-level factor blocks — built once.
+
+    The date-level blocks are the four factor families. They are keyed by date alone, so
+    they merge onto *any* panel — market, sector or pooled — which is what lets the pooled
+    panel carry the same candidate features as the other two.
+    """
+    global _SOURCES
+    if _SOURCES is not None and not force:
+        return _SOURCES
+
+    raw = fetch.fetch_all()
+    print("Building feature blocks...")
+    market_core = build_core(raw["market"])
+    sector_core = _with_sector_rel(build_core(raw["sectors"]), market_core)
+
+    _SOURCES = {
+        "raw": raw,
+        "market_core": market_core,
+        "sector_core": sector_core,
+        "date_blocks": [
+            factors.build_vix(raw["vix"], market_core),
+            factors.build_breadth(raw["breadth"]),
+            factors.build_macro(raw["macro"]),
+            factors.build_sector_xs(sector_core),
+        ],
+    }
+    return _SOURCES
+
+
+def _with_sector_rel(sector_core: pd.DataFrame, market_core: pd.DataFrame) -> pd.DataFrame:
+    """Where each sector sits within the sector cross-section on that day."""
+    sec = sector_core.copy()
+    rv = sec["log_rv_m"]
+    sec["sec_rv_rel"] = rv - sec.groupby("date")["log_rv_m"].transform("mean")
+    sec["sec_rv_rank"] = sec.groupby("date")["log_rv_m"].rank(pct=True)
+
+    # Rolling 63-day beta of each sector to SPY: high-beta sectors inherit market vol.
+    spy_ret = market_core.set_index("date")["ret"]
+    sec["_mkt_ret"] = sec["date"].map(spy_ret)
+
+    def _beta(g: pd.DataFrame) -> pd.Series:
+        cov = g["ret"].rolling(63).cov(g["_mkt_ret"])
+        var = g["_mkt_ret"].rolling(63).var()
+        return cov / var.replace(0, np.nan)
+
+    sec["sec_beta_63"] = (sec.sort_values(["ticker", "date"])
+                             .groupby("ticker", group_keys=False)
+                             .apply(_beta, include_groups=False)
+                             .reindex(sec.index))
+    return sec.drop(columns=["_mkt_ret"])
+
+
+def _candidate_columns(panel: str = "sector") -> list[str]:
+    """Every column any factor family can ask for — what a panel must carry to be testable."""
+    fams = feature_families(panel)
+    return [c for k, v in fams.items() if k != "core" for c in v]
 
 
 def build_pooled_panel(force: bool = False) -> pd.DataFrame:
@@ -48,35 +128,52 @@ def build_pooled_panel(force: bool = False) -> pd.DataFrame:
 
     A `series_type` column is carried so the model can still distinguish an index from a
     single name, since diversification makes indices genuinely less volatile.
-    """
-    config.ensure_dirs()
-    if POOLED_PANEL.exists() and not force:
-        return pd.read_parquet(POOLED_PANEL)
 
-    raw = fetch.fetch_all()
+    The factor families are merged in here too. They are not part of the shipped feature
+    set, but this frame is what `load_panel` returns for any panel that trains pooled, so a
+    family missing here is a family the ablation and the selection study cannot test at all.
+    """
+    global _POOLED
+    config.ensure_dirs()
+    if _POOLED is not None and not force:
+        return _POOLED
+    if POOLED_PANEL.exists() and not force:
+        cached = pd.read_parquet(POOLED_PANEL)
+        missing = [c for c in _candidate_columns() if c not in cached.columns]
+        if not missing:
+            # Held in memory for the rest of the process. The selection and ablation studies
+            # ask for this frame once per candidate feature set — dozens of times — and it is
+            # a 140 MB parquet; re-reading it each time dominated their runtime.
+            _POOLED = cached
+            return cached
+        print(f"  pooled panel is missing {len(missing)} candidate columns "
+              f"({', '.join(missing[:4])}...) — rebuilding")
+
+    s = _sources()
+    stock_core = build_core(s["raw"]["breadth"])
     parts = []
-    for name, key in [("stock", "breadth"), ("sector", "sectors"), ("index", "market")]:
-        core = build_core(raw[key])
+    for name, core in [("stock", stock_core), ("sector", s["sector_core"]),
+                       ("index", s["market_core"])]:
+        core = core.copy()
         core["series_type"] = name
         parts.append(core)
 
+    # Single stocks and the index have no `sector_rel` block, so concat leaves those three
+    # columns NaN for them. That is correct and deliberate: `training_frame` narrows the
+    # pooled rows when a sector-only family is in play, rather than letting a dropna quietly
+    # delete 80% of the training set.
     pooled = pd.concat(parts, ignore_index=True)
+    pooled = _merge_date_blocks(pooled, s["date_blocks"])
+
     # Numeric encoding for the model; ordered by breadth of diversification.
     pooled["is_index"] = (pooled["series_type"] == "index").astype(int)
     pooled["is_sector"] = (pooled["series_type"] == "sector").astype(int)
     pooled = pooled.sort_values(["ticker", "date"]).reset_index(drop=True)
+    _POOLED = pooled
     pooled.to_parquet(POOLED_PANEL, index=False)
     print(f"  pooled panel -> {POOLED_PANEL.name} ({len(pooled):,} rows, "
           f"{pooled['ticker'].nunique()} series)")
     return pooled
-
-
-def _merge_date_blocks(base: pd.DataFrame, blocks: list[pd.DataFrame]) -> pd.DataFrame:
-    """Left-join date-level factor blocks onto a panel keyed by date (+ ticker)."""
-    out = base
-    for b in blocks:
-        out = out.merge(b, on="date", how="left")
-    return out
 
 
 def build_panels(force: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -85,43 +182,16 @@ def build_panels(force: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     if MARKET_PANEL.exists() and SECTOR_PANEL.exists() and not force:
         return pd.read_parquet(MARKET_PANEL), pd.read_parquet(SECTOR_PANEL)
 
-    raw = fetch.fetch_all()
+    s = _sources()
+    blocks = s["date_blocks"]
 
     print("Building feature panels...")
-    market_core = build_core(raw["market"])
-    sector_core = build_core(raw["sectors"])
-
-    # --- date-level factor families ---------------------------------------------------
-    vix_block = factors.build_vix(raw["vix"], market_core)
-    breadth_block = factors.build_breadth(raw["breadth"])
-    macro_block = factors.build_macro(raw["macro"])
-    sector_xs_block = factors.build_sector_xs(sector_core)
-    blocks = [vix_block, breadth_block, macro_block, sector_xs_block]
-
     # --- market panel -----------------------------------------------------------------
-    market = _merge_date_blocks(market_core.drop(columns=["ticker"]), blocks)
+    market = _merge_date_blocks(s["market_core"].drop(columns=["ticker"]), blocks)
     market = market.sort_values("date").reset_index(drop=True)
 
-    # --- sector panel: add each sector's position within the sector cross-section ------
-    sec = sector_core.copy()
-    rv = sec["log_rv_m"]
-    sec["sec_rv_rel"] = rv - sec.groupby("date")["log_rv_m"].transform("mean")
-    sec["sec_rv_rank"] = sec.groupby("date")["log_rv_m"].rank(pct=True)
-
-    # Rolling 63-day beta of each sector to SPY: high-beta sectors inherit market vol.
-    spy_ret = market_core.set_index("date")["ret"]
-    sec["_mkt_ret"] = sec["date"].map(spy_ret)
-    def _beta(g: pd.DataFrame) -> pd.Series:
-        cov = g["ret"].rolling(63).cov(g["_mkt_ret"])
-        var = g["_mkt_ret"].rolling(63).var()
-        return cov / var.replace(0, np.nan)
-    sec["sec_beta_63"] = (sec.sort_values(["ticker", "date"])
-                             .groupby("ticker", group_keys=False)
-                             .apply(_beta, include_groups=False)
-                             .reindex(sec.index))
-    sec = sec.drop(columns=["_mkt_ret"])
-
-    sector = _merge_date_blocks(sec, blocks)
+    # --- sector panel ------------------------------------------------------------------
+    sector = _merge_date_blocks(s["sector_core"], blocks)
     sector["sector_name"] = sector["ticker"].map(config.SECTOR_ETFS)
     sector = sector.sort_values(["ticker", "date"]).reset_index(drop=True)
 
@@ -130,6 +200,10 @@ def build_panels(force: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     print(f"  market panel -> {MARKET_PANEL.name} ({len(market):,} rows)")
     print(f"  sector panel -> {SECTOR_PANEL.name} ({len(sector):,} rows, "
           f"{sector['ticker'].nunique()} sectors)")
+
+    # Keep the pooled panel in step: it is built from the same blocks and is what every
+    # pooled-training panel is evaluated on.
+    build_pooled_panel(force=force)
     return market, sector
 
 
@@ -141,7 +215,16 @@ def feature_families(panel: str) -> dict[str, list[str]]:
     """
     fams = {
         "core": list(CORE_FEATURES),
+        # Own-history blocks. These were built into every panel from the start but were
+        # only reachable through hand-written entries in the methods bake-off, so the
+        # selection study could never choose them. They are standard specifications —
+        # HAR-J and HAR-RS — and belong in the same competition as everything else.
+        "jump": list(JUMP_FEATURES),
+        "semivar": list(SEMIVAR_FEATURES),
+        "range_ext": list(RANGE_EXT_FEATURES),
+        # External series.
         "vix": list(factors.VIX_FEATURES),
+        "vix_short": list(factors.VIX_SHORT_FEATURES),
         "breadth": list(factors.BREADTH_FEATURES),
         "macro": list(factors.MACRO_FEATURES),
         "sector_xs": list(factors.SECTOR_XS_FEATURES),
@@ -189,11 +272,30 @@ def load_panel(panel: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
+def training_frame(panel: str, features: list[str] | None = None) -> pd.DataFrame:
+    """The frame a panel's model is FITTED on, given the features it will use.
+
+    The feature list matters because of `SECTOR_ONLY_FAMILIES`. `sec_rv_rel`, `sec_rv_rank`
+    and `sec_beta_63` are undefined for a single stock, so pooling stocks in while one of
+    them is selected would hand `dataset.labelled` a frame where 80% of the rows are NaN in
+    a required column — and its `dropna` would delete them without a word. The training set
+    would silently shrink from ~471k rows to ~37k and nothing downstream would notice.
+
+    Narrowing here instead makes that consequence explicit and auditable.
+    """
+    if config.TRAINING_SOURCE.get(panel) != "pooled":
+        return load_panel(panel)
+
+    pooled = build_pooled_panel()
+    feats = features if features is not None else all_features(panel)
+    if any(f in SECTOR_REL_FEATURES for f in feats):
+        return pooled[pooled["ticker"].isin(config.SECTOR_ETFS)].reset_index(drop=True)
+    return pooled
+
+
 def load_training_panel(panel: str) -> pd.DataFrame:
-    """The frame a panel's model is FITTED on — the whole cross-section when pooled."""
-    if config.TRAINING_SOURCE.get(panel) == "pooled":
-        return build_pooled_panel()
-    return load_panel(panel)
+    """The frame a panel's model is FITTED on, for the SHIPPED feature set."""
+    return training_frame(panel)
 
 
 def fit_and_eval_frames(panel: str, features: list[str], h: int):
@@ -209,7 +311,7 @@ def fit_and_eval_frames(panel: str, features: list[str], h: int):
     eval_df = D.labelled(load_panel(panel), features, h)
     if config.TRAINING_SOURCE.get(panel) != "pooled":
         return eval_df, eval_df
-    return D.labelled(load_training_panel(panel), features, h), eval_df
+    return D.labelled(training_frame(panel, features), features, h), eval_df
 
 
 if __name__ == "__main__":

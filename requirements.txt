@@ -6,10 +6,13 @@
 # --- data & modelling ---
 pandas==3.0.3
 numpy==2.4.6
+scipy==1.17.1                # non-negative least squares for the ensemble weights
 pyarrow==24.0.0
 scikit-learn==1.9.0
 xgboost==3.2.0
-yfinance==1.5.1              # all price, VIX and macro series (free, no API key)
+yfinance==1.5.1              # prices and macro series (free, no API key)
+# The implied-volatility complex comes from Cboe's own daily-history CSVs over plain HTTP
+# (stdlib urllib, no extra dependency) — see volradar/data/fetch.py.
 
 # --- API ---
 fastapi==0.141.1

@@ -32,7 +32,7 @@ export function SectorTable({ sectors, horizon, selected, onSelect }) {
               <th className="num">Now</th>
               <th className="num">Change</th>
               <th>Outlook</th>
-              <th className="num" title="Out-of-sample rise/fall accuracy for this sector, 13 walk-forward years">
+              <th className="num" title="Out-of-sample rise/fall accuracy for this sector, across every walk-forward year">
                 Hit rate
               </th>
             </tr>

@@ -64,6 +64,31 @@ JUMP_FEATURES = ["log_bpv_m", "jump_share_m", "log_jump_d", "rq_ratio"]
 # than upside variance — the leverage effect, measured directly rather than proxied.
 SEMIVAR_FEATURES = ["log_rs_down_m", "log_rs_up_m", "semivar_skew_m"]
 
+# The two range estimators the core block was missing.
+#
+# Parkinson and Garman-Klass, already in CORE_FEATURES, both assume the price has no drift
+# over the day. When it does — a steady grind up or down — they read that trend as
+# volatility and over-state it.
+#
+# **Rogers-Satchell** (1991) removes that assumption: it is built from the four log
+# distances between the open/close and the high/low, and is unbiased under drift.
+#
+# **Yang-Zhang** (2000) adds the piece every intraday-range estimator structurally cannot
+# see — the overnight gap. It combines overnight variance, open-to-close variance and
+# Rogers-Satchell with the weighting that minimises variance among estimators robust to
+# opening jumps, and it is the most efficient daily-OHLC estimator known. The gap matters
+# especially here: SPY's overnight move is a large share of its total variation, and a
+# close-to-close target counts that gap while a high-low estimator does not.
+#
+# `yz_gap_share` is the diagnostic that goes with it: how much of the day's variance came
+# from the gap rather than the session.
+RANGE_EXT_FEATURES = ["log_rs_d", "log_rs_m", "log_yz_w", "log_yz_m", "yz_gap_share"]
+
+# Yang-Zhang's variance-minimising weight on the open-to-close term. k = 0.34/(1.34 +
+# (n+1)/(n-1)) at window n; at n = 21 this is 0.1706, which is what the paper's own
+# worked example uses.
+_YZ_K = 0.34 / (1.34 + 22.0 / 20.0)
+
 
 def _roll_rv(g: pd.core.groupby.generic.SeriesGroupBy, window: int) -> pd.Series:
     """Root-mean-square of a squared-return column over a trailing window, per ticker."""
@@ -159,6 +184,30 @@ def build_core(df: pd.DataFrame, horizons: list[int] | None = None,
     out["log_gk_d"] = np.log(np.sqrt(gk_var) + EPS)
     out["log_gk_w"] = np.log(_roll_rv(gr("_gk_var"), 5) + EPS)
     out["log_gk_m"] = np.log(_roll_rv(gr("_gk_var"), 21) + EPS)
+
+    # --- Rogers-Satchell: unbiased under drift ----------------------------------------
+    ho = np.log(out["high"] / out["open"])
+    lo_ = np.log(out["low"] / out["open"])
+    hc, lc = ho - co, lo_ - co
+    out["_rs_var"] = (ho * hc + lo_ * lc).clip(lower=0.0)
+    out["log_rs_d"] = np.log(np.sqrt(out["_rs_var"]) + EPS)
+    out["log_rs_m"] = np.log(_roll_rv(gr("_rs_var"), 21) + EPS)
+
+    # --- Yang-Zhang: overnight + open-to-close + Rogers-Satchell -----------------------
+    # The overnight leg is the log gap from the previous close to today's open — the part
+    # of the day's move no intraday range can contain.
+    prev_close = gr("close").transform(lambda s: s.shift(1))
+    out["_on"] = np.log(out["open"] / prev_close)
+    out["_co"] = co
+    for name, win in [("w", 5), ("m", 21)]:
+        var_on = gr("_on").transform(lambda s: s.rolling(win).var())
+        var_co = gr("_co").transform(lambda s: s.rolling(win).var())
+        var_rs = gr("_rs_var").transform(lambda s: s.rolling(win).mean())
+        yz = (var_on + _YZ_K * var_co + (1.0 - _YZ_K) * var_rs).clip(lower=0.0)
+        out[f"log_yz_{name}"] = np.log(np.sqrt(yz) + EPS)
+        if name == "m":
+            # Share of monthly variance contributed by the overnight gap.
+            out["yz_gap_share"] = (var_on / yz.replace(0, np.nan)).clip(0, 1)
 
     # --- Own-vol term structure (differences of logs = log ratios) --------------------
     out["rv_slope_wm"] = out["log_rv_w"] - out["log_rv_m"]

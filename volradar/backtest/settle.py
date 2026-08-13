@@ -22,15 +22,14 @@ Run:
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 from volradar import config
 from volradar.backtest import metrics as M
-from volradar.backtest.methods import fold_edges
 from volradar.features.assemble import all_features, fit_and_eval_frames
 from volradar.models import dataset as D
 from volradar.models import estimators as E
+from volradar.models.dataset import fold_edges
 
 PRE_TEST_YEARS = [y for y in config.WALK_YEARS if y < int(config.TEST_START[:4])]
 REPORT = config.REPORT_DIR / "settled.csv"
@@ -77,18 +76,22 @@ def _per_fold(panel: str, h: int, years: list[int], per_year: int) -> pd.DataFra
 
 
 def _paired(df: pd.DataFrame, metric: str, higher_is_better: bool = True) -> pd.DataFrame:
-    base = df[df["model"] == "gbm (incumbent)"].set_index("fold")[metric]
+    """Every candidate against the incumbent, on the folds they both scored.
+
+    The sign flip for a lower-is-better metric happens here so `metrics.paired_test` only
+    ever sees "bigger is better" — one convention, one implementation of the test.
+    """
+    sign = 1.0 if higher_is_better else -1.0
+    base = df[df["model"] == "gbm (incumbent)"].set_index("fold")[metric] * sign
     out = []
     for name, g in df.groupby("model"):
         if name == "gbm (incumbent)":
             continue
-        s = g.set_index("fold")[metric]
+        s = g.set_index("fold")[metric] * sign
         common = base.index.intersection(s.index)
-        d = (s[common] - base[common]) * (1 if higher_is_better else -1)
-        se = d.std(ddof=1) / np.sqrt(len(d)) if len(d) > 2 else np.nan
-        out.append({"model": name, "n": len(d), "delta": d.mean(),
-                    "t": d.mean() / se if se and se > 0 else np.nan,
-                    "wins": int((d > 0).sum())})
+        v = M.paired_test(s[common].to_numpy(), base[common].to_numpy())
+        out.append({"model": name, "n": v["n"], "delta": v["delta"],
+                    "t": v["t"], "wins": v["wins"]})
     return pd.DataFrame(out)
 
 
@@ -107,9 +110,9 @@ def settle(panel: str, h: int | None = None) -> pd.DataFrame:
 
         for metric, hib in [("skill_vs_persistence", True), ("qlike", False)]:
             pv = _paired(folds, metric, hib)
-            print(f"  paired on {metric} (t>2 adopts):")
+            print(f"  paired on {metric} (t>{M.ADOPT_T:g} adopts):")
             for _, r in pv.iterrows():
-                flag = "ADOPT" if (r["t"] > 2 and r["delta"] > 0) else "hold "
+                flag = "ADOPT" if M.adopts(r) else "hold "
                 print(f"    {flag} {r['model']:<16} delta {r['delta']:+.4f} "
                       f"t={r['t']:+.2f}  wins {r['wins']}/{r['n']}")
             pv["metric"], pv["folds"] = metric, label
@@ -128,7 +131,7 @@ def main() -> None:
     for (panel, model, metric), g in out.groupby(["panel", "model", "metric"]):
         if len(g) < 2:
             continue
-        if (g["t"] > 2).all() and (g["delta"] > 0).all():
+        if (g["t"] > M.ADOPT_T).all() and (g["delta"] > 0).all():
             print(f"  ADOPT  {panel}/{model} on {metric}: "
                   f"t = {', '.join(f'{v:+.2f}' for v in g['t'])}")
 

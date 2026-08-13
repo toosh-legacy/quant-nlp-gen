@@ -12,7 +12,12 @@ protocol so the comparison is fair:
   volatility forecast: it treats a 2-point miss at 10% vol the same as at 60% vol. QLIKE
   (Patton 2011) is the standard robust alternative, and crucially it stays consistent even
   though realized volatility is a *noisy proxy* for true volatility — most losses do not.
-* a method must clear the incumbent by more than one standard error to be adopted.
+* a method is adopted only if it beats the incumbent on a **paired** fold-by-fold t-test at
+  t > 2, on skill *and* on QLIKE — the same bar `select_features.py` and `settle.py` use,
+  implemented once in `metrics.paired_test`;
+* the table also reports the **Model Confidence Set** (Hansen, Lunde & Nason 2011): the
+  methods that cannot be statistically distinguished from the best one. Naming a single
+  winner from a table this tightly packed claims more than the data supports.
 
 Run:
     python -m volradar.backtest.methods
@@ -27,29 +32,17 @@ import pandas as pd
 
 from volradar import config
 from volradar.backtest import metrics as M
-from volradar.features.assemble import all_features, build_pooled_panel, load_panel
+from volradar.features.assemble import (all_features, build_pooled_panel,
+                                        fit_and_eval_frames, load_panel)
 from volradar.features.core import CORE_FEATURES, JUMP_FEATURES, SEMIVAR_FEATURES
 from volradar.models import dataset as D
 from volradar.models import estimators as E
+from volradar.models.dataset import fold_edges          # re-exported: callers expect it here
 
-
-# ---------------------------------------------------------------------------
-# QLIKE — the volatility-native loss
-# ---------------------------------------------------------------------------
-def qlike(y_log_vol, pred_log_vol) -> float:
-    """Mean QLIKE loss. Inputs are log DAILY volatility; QLIKE is defined on variance.
-
-    QLIKE(sigma^2, h) = log(h) + sigma^2 / h, up to a constant. With h = exp(2*pred) and
-    sigma^2 = exp(2*y) this is 2*pred + exp(2*(y - pred)).
-
-    Why it matters here: squared error on logs punishes a miss at 10% volatility exactly as
-    hard as the same miss at 60%, whereas QLIKE penalises *under*-forecasting risk more than
-    over-forecasting it — which is the asymmetry a risk user actually cares about.
-    """
-    y = np.asarray(y_log_vol, float)
-    p = np.asarray(pred_log_vol, float)
-    d = np.clip(2.0 * (y - p), -20, 20)     # guard the exponential against outliers
-    return float(np.mean(2.0 * p + np.exp(d)))
+# QLIKE, the paired adoption test and the fold boundaries all live in one place now —
+# `metrics.qlike`, `metrics.paired_test` and `dataset.fold_edges`. This module used to
+# carry its own copies, which is how a project ends up with two subtly different bars.
+qlike = M.qlike
 
 
 # ---------------------------------------------------------------------------
@@ -69,11 +62,19 @@ class Method:
 
 
 class Incumbent(Method):
-    """What ships today: GBM on core features, trained on this panel only."""
+    """What ships today: GBM on the selected features, trained the way production trains.
+
+    "The way production trains" is load-bearing and used to be wrong here. The market panel
+    fits on its own history and the sector panel fits on the pooled cross-section
+    (`config.TRAINING_SOURCE`); this class now routes through `fit_and_eval_frames` so the
+    incumbent every challenger is measured against is the model that actually ships. Scoring
+    challengers against a sector model trained on 37k rows, then shipping one trained on
+    471k, would make the whole bake-off a comparison nobody runs.
+    """
 
     def fit_predict(self, panel, h, cutoff, test, ctx):
         feats = self.features(panel)
-        train = D.embargoed_train(ctx["sub"], h, cutoff)
+        train = D.embargoed_train(ctx["train_sub"], h, cutoff)
         return E.fit_gbm(train, feats, h, ctx["params"]).predict(test)
 
 
@@ -168,13 +169,15 @@ class ShrinkToPersistence(Incumbent):
 
     def fit_predict(self, panel, h, cutoff, test, ctx):
         feats = self.features(panel)
-        sub = ctx["sub"]
-        train = D.embargoed_train(sub, h, cutoff)
+        train = D.embargoed_train(ctx["train_sub"], h, cutoff)
         model = E.fit_gbm(train, feats, h, ctx["params"])
 
-        # Fit the blend weight on the last 2 years of training data, held out from the fit.
+        # Fit the blend weight on the last 2 years, held out from the fit. The inner model
+        # is fitted on the training frame; the holdout comes from the frame being predicted,
+        # because that is the series whose persistence baseline the weight has to balance.
         inner_cut = cutoff - pd.DateOffset(years=2)
-        inner_train = D.embargoed_train(sub, h, inner_cut)
+        inner_train = D.embargoed_train(ctx["train_sub"], h, inner_cut)
+        sub = ctx["sub"]
         holdout = sub[(sub["date"] >= inner_cut) & (sub["date"] < cutoff)]
         if len(inner_train) < 300 or len(holdout) < 100:
             return model.predict(test)
@@ -203,7 +206,7 @@ class RecencyWeighted(Incumbent):
     def fit_predict(self, panel, h, cutoff, test, ctx):
         from xgboost import XGBRegressor
         feats = self.features(panel)
-        train = D.embargoed_train(ctx["sub"], h, cutoff)
+        train = D.embargoed_train(ctx["train_sub"], h, cutoff)
         age = (cutoff - train["date"]).dt.days.to_numpy(float)
         w = 0.5 ** (age / self.half_life_days)
         m = XGBRegressor(**E.GBM_FIXED, **ctx["params"])
@@ -221,10 +224,51 @@ class HarGbmAverage(Incumbent):
 
     def fit_predict(self, panel, h, cutoff, test, ctx):
         feats = self.features(panel)
-        train = D.embargoed_train(ctx["sub"], h, cutoff)
+        train = D.embargoed_train(ctx["train_sub"], h, cutoff)
         gbm = E.fit_gbm(train, feats, h, ctx["params"]).predict(test)
         har = E.fit_har(train, feats, h).predict(test)
         return 0.5 * gbm + 0.5 * har
+
+
+class MLPMethod(Incumbent):
+    """A small two-layer network instead of the gradient-boosted trees.
+
+    Two independent results motivate it. Christensen, Siggaard & Veliyev report a two-layer
+    network as the best single model for realized volatility once the feature set is wider
+    than plain HAR; Zhang, Cucuringu et al. report neural nets dominating linear and
+    tree-based models specifically on *pooled* cross-sections of equities. The sector panel
+    here is exactly that setting, so this is a replication rather than a guess.
+
+    Its capacity is tuned on the same frozen validation slice the GBM uses.
+    """
+
+    def fit_predict(self, panel, h, cutoff, test, ctx):
+        feats = self.features(panel)
+        train = D.embargoed_train(ctx["train_sub"], h, cutoff)
+        return E.fit_mlp(train, feats, h, ctx.get("mlp_params")).predict(test)
+
+
+class EnsembleMethod(Incumbent):
+    """Equal-weight average of HAR, HARQ, SHAR, ridge and the GBM.
+
+    The bake-off already contains a two-member average (`har+gbm`); this is the full-ladder
+    version. Combination is the single most reliably replicated improvement in this
+    literature, and these five err in different kinds — linear vs flexible, level vs
+    measurement-error-corrected vs leverage-corrected — which is the condition under which
+    averaging helps rather than just smoothing.
+    """
+    weights = "equal"
+
+    def fit_predict(self, panel, h, cutoff, test, ctx):
+        feats = self.features(panel)
+        train = D.embargoed_train(ctx["train_sub"], h, cutoff)
+        return E.fit_ensemble(train, feats, h, ctx["params"],
+                              weights=self.weights).predict(test)
+
+
+class EnsembleNNLS(EnsembleMethod):
+    """Same members, weights fitted by non-negative least squares on an inner holdout."""
+    weights = "nnls"
 
 
 class RollingRefit(Method):
@@ -249,7 +293,6 @@ class RollingRefit(Method):
 
     def fit_predict(self, panel, h, cutoff, test, ctx):
         feats = self.features(panel)
-        sub = ctx["sub"]
         test = test.sort_values("date")
         preds = np.full(len(test), np.nan)
         dates = test["date"].to_numpy()
@@ -259,7 +302,7 @@ class RollingRefit(Method):
         for s in starts:
             e = min(s + self.refit_days, len(test))
             asof = pd.Timestamp(dates[s])
-            train = D.embargoed_train(sub, h, asof)
+            train = D.embargoed_train(ctx["train_sub"], h, asof)
             if self.window_days:
                 train = train[train["date"] >= asof - pd.Timedelta(days=int(
                     self.window_days * 1.45))]      # calendar days ~ trading days / 0.69
@@ -268,7 +311,7 @@ class RollingRefit(Method):
             if self.estimator == "gbm":
                 m = E.fit_gbm(train, feats, h, ctx["params"])
             else:
-                m = dict(E.LADDER)[self.estimator](train, feats, h)
+                m = E.fit_by_name(self.estimator, train, feats, h, ctx.get("params"))
             preds[s:e] = m.predict(test.iloc[s:e])
 
         # Any chunk too thin to fit falls back to the persistence baseline rather than NaN.
@@ -300,7 +343,7 @@ class HARQMethod(Incumbent):
     """HAR with the measurement-error correction (Bollerslev, Patton & Quaedvlieg 2016)."""
 
     def fit_predict(self, panel, h, cutoff, test, ctx):
-        train = D.embargoed_train(ctx["sub"], h, cutoff)
+        train = D.embargoed_train(ctx["train_sub"], h, cutoff)
         return E.fit_harq(train, None, h).predict(test)
 
 
@@ -308,7 +351,7 @@ class SHARMethod(Incumbent):
     """HAR on signed semivariance (Patton & Sheppard 2015)."""
 
     def fit_predict(self, panel, h, cutoff, test, ctx):
-        train = D.embargoed_train(ctx["sub"], h, cutoff)
+        train = D.embargoed_train(ctx["train_sub"], h, cutoff)
         return E.fit_shar(train, None, h).predict(test)
 
 
@@ -329,7 +372,7 @@ class GbmPlusRollingHAR(RollingRefit):
     def fit_predict(self, panel, h, cutoff, test, ctx):
         rolling = super().fit_predict(panel, h, cutoff, test, ctx)
         feats = self.features(panel)
-        train = D.embargoed_train(ctx["sub"], h, cutoff)
+        train = D.embargoed_train(ctx["train_sub"], h, cutoff)
         gbm = E.fit_gbm(train, feats, h, ctx["params"]).predict(test.sort_values("date"))
         return 0.5 * rolling + 0.5 * gbm
 
@@ -346,6 +389,9 @@ METHODS: list[Method] = [
     RecencyWeighted("recency", "exponential sample weighting, 3-year half-life"),
     HarGbmAverage("har+gbm", "equal-weight average of HAR and GBM"),
     # --- literature-backed additions ---------------------------------------------------
+    MLPMethod("mlp", "two-layer neural network (Christensen et al.; Zhang et al.)"),
+    EnsembleMethod("ensemble", "equal-weight average of HAR, HARQ, SHAR, ridge, GBM"),
+    EnsembleNNLS("ensemble-nnls", "same members, non-negative least-squares weights"),
     HARQMethod("harq", "HAR + realized-quarticity correction (Bollerslev/Patton/Quaedvlieg)"),
     SHARMethod("shar", "HAR on signed semivariance (Patton/Sheppard)"),
     RollingRefit("roll-gbm-3y", "GBM, 3-year rolling window, monthly refit"),
@@ -362,15 +408,17 @@ METHODS: list[Method] = [
 # Runner
 # ---------------------------------------------------------------------------
 def _context(panel: str, h: int, method: Method) -> dict:
-    """Shared per-(panel, horizon) setup: labelled frames and tuned parameters."""
-    df = load_panel(panel)
-    feats = method.features(panel)
+    """Shared per-(panel, horizon) setup: labelled frames and tuned parameters.
 
-    pooled_all = build_pooled_panel()
+    Two frames, always: `train_sub` is what a model is fitted on, `sub` is what it is
+    scored on. They are the same object's rows for a panel that trains on its own history
+    and genuinely different when it trains pooled.
+    """
+    feats = method.features(panel)
     ctx: dict = {}
 
     if isinstance(method, Pooled):
-        pool = D.labelled(pooled_all, feats, h)
+        pool = D.labelled(build_pooled_panel(), feats, h)
         ctx["pooled"] = pool
         # The target panel's own rows, expressed in the pooled feature space.
         tick = config.MARKET_TICKER if panel == "market" else None
@@ -381,44 +429,30 @@ def _context(panel: str, h: int, method: Method) -> dict:
         ctx["pooled_params"] = (E.tune_gbm(fit, val, feats, h, quiet=True)
                                 if len(fit) > 200 and len(val) > 100 else E.GBM_DEFAULT)
         # Test rows must come from the pooled frame so the extra columns exist.
-        ctx["sub"] = ctx["sub_pooled"]
+        ctx["sub"] = ctx["train_sub"] = ctx["sub_pooled"]
     else:
-        sub = D.labelled(df, feats, h)
-        ctx["sub"] = sub
-        fit = D.embargoed_train(sub, h, pd.Timestamp(config.VAL_START))
+        tr_sub, sub = fit_and_eval_frames(panel, feats, h)
+        ctx["sub"], ctx["train_sub"] = sub, tr_sub
+        fit = D.embargoed_train(tr_sub, h, pd.Timestamp(config.VAL_START))
         val = D.time_slice(sub, config.VAL_START, config.VAL_END)
         ctx["params"] = (E.tune_gbm(fit, val, feats, h, quiet=True)
                          if len(fit) > 200 and len(val) > 100 else E.GBM_DEFAULT)
+        if isinstance(method, MLPMethod):
+            ctx["mlp_params"] = (E.tune_mlp(fit, val, feats, h, quiet=True)
+                                 if len(fit) > 200 and len(val) > 100 else E.MLP_DEFAULT)
     return ctx
-
-
-def fold_edges(years: list[int], per_year: int = 1) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    """Fold boundaries. `per_year=2` splits each year in half.
-
-    Splitting folds more finely is a legitimate way to gain statistical power for a paired
-    comparison: it adds independent evaluation points without touching the test period or
-    changing what any model is trained on before its own cutoff. It is not a second bite at
-    the apple — the same data is simply scored in smaller, still-disjoint blocks.
-    """
-    out = []
-    for y in years:
-        for k in range(per_year):
-            m0 = 1 + (12 // per_year) * k
-            start = pd.Timestamp(f"{y}-{m0:02d}-01")
-            end = (start + pd.DateOffset(months=12 // per_year))
-            out.append((start, end))
-    return out
 
 
 def run_method(method: Method, panel: str, h: int, years: list[int],
                per_year: int = 1) -> dict:
     ctx = _context(panel, h, method)
-    sub = ctx["sub"]
-    rows = []
+    sub, train_sub = ctx["sub"], ctx["train_sub"]
+    rows, obs = [], []
+    key_cols = ["date"] + (["ticker"] if panel == "sector" else [])
     min_test = max(60 // per_year, 30)
     for cutoff, end in fold_edges(years, per_year):
         test = D.time_slice(sub, cutoff, end)
-        train_n = len(D.embargoed_train(sub, h, cutoff))
+        train_n = len(D.embargoed_train(train_sub, h, cutoff))
         if train_n < 300 or len(test) < min_test:
             continue
         pred = method.fit_predict(panel, h, cutoff, test, ctx)
@@ -430,6 +464,12 @@ def run_method(method: Method, panel: str, h: int, years: list[int],
         r["qlike_persist"] = qlike(y, per)
         r["qlike_gain"] = r["qlike_persist"] - r["qlike"]
         rows.append(r)
+        # Per-observation loss, keyed so the MCS can align methods whose feature sets drop
+        # different rows. Aligning on position instead would silently compare day i of one
+        # method with day j of another.
+        piece = test[key_cols].copy()
+        piece["loss"] = M.qlike_obs(y, pred)
+        obs.append(piece)
 
     f = pd.DataFrame(rows)
     n = max(len(f), 1)
@@ -446,78 +486,127 @@ def run_method(method: Method, panel: str, h: int, years: list[int],
         "r2_mean": f["r2"].mean(),
         # Retained for the paired comparison below — every method sees identical folds.
         "_per_fold": f["skill_vs_persistence"].to_numpy(),
+        "_per_fold_qlike": f["qlike_gain"].to_numpy(),
+        "_obs_loss": (pd.concat(obs, ignore_index=True).set_index(key_cols)["loss"]
+                      if obs else None),
         "_years": years[:len(f)],
     }
 
 
-def paired_verdict(cand: dict, base: dict) -> dict:
-    """Compare a candidate to the incumbent fold by fold.
+def paired_verdict(cand: dict, base: dict, key: str = "_per_fold") -> dict:
+    """Paired fold-by-fold comparison — see `metrics.paired_test`, the only implementation."""
+    return M.paired_test(cand[key], base[key])
 
-    Comparing two marginal means and their separate standard errors is the wrong test here,
-    and it fails in a specific way that matters: an *unstable* incumbent has a large
-    standard error, which inflates the bar a challenger must clear — so the noisier the
-    thing being replaced, the harder it becomes to replace it. Exactly backwards.
 
-    Every method is evaluated on the same folds, so the differences are paired and most of
-    the shared year-to-year variation cancels. The test is on the mean of the per-fold
-    difference.
+def _mcs_table(rows: list[dict], panel: str, h: int) -> pd.DataFrame:
+    """Which methods cannot be distinguished from the best, under QLIKE."""
+    series = {r["method"]: r["_obs_loss"] for r in rows if r["_obs_loss"] is not None}
+    if len(series) < 2:
+        return pd.DataFrame()
+    # Inner join: the MCS compares models on the observations they all scored.
+    losses = pd.concat(series, axis=1, join="inner").dropna()
+    mcs = M.model_confidence_set(losses)
+    mcs.insert(0, "panel", panel)
+    mcs.insert(1, "horizon", h)
+    kept = mcs[mcs["in_mcs"]]["model"].tolist()
+    print(f"\n  Model Confidence Set (QLIKE, alpha=0.10, {len(losses):,} shared "
+          f"observations): {len(kept)} of {len(mcs)} methods survive")
+    print(f"    {', '.join(kept)}")
+    return mcs
+
+
+GRANULARITIES = [("annual", 1), ("semi-annual", 2)]
+
+
+def bake_off(panel: str, h: int | None = None,
+             years: list[int] | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Score every method at both fold granularities; adopt only if both agree.
+
+    This used to run annual folds alone, which quietly made it the one place in the project
+    that did *not* apply the rule the rest of it advertises. It mattered: `jumps` clears the
+    bar decisively on annual folds (t = +3.26 on skill, +2.91 on QLIKE) and collapses to
+    about +0.3 when the same window is cut in half. A table printing only the first number
+    publishes an ADOPT for a method this project has already rejected twice, for exactly
+    that reason.
     """
-    a, b = np.asarray(cand["_per_fold"], float), np.asarray(base["_per_fold"], float)
-    n = min(len(a), len(b))
-    if n < 3:
-        return {"delta": np.nan, "delta_se": np.nan, "t": np.nan, "wins": 0, "n": n}
-    d = a[:n] - b[:n]
-    se = d.std(ddof=1) / np.sqrt(n)
-    return {
-        "delta": float(d.mean()),
-        "delta_se": float(se),
-        "t": float(d.mean() / se) if se > 0 else np.nan,
-        "wins": int((d > 0).sum()),
-        "n": n,
-    }
-
-
-def bake_off(panel: str, h: int | None = None, years: list[int] | None = None) -> pd.DataFrame:
     h = h or config.HEADLINE_HORIZON
     years = years or [y for y in config.WALK_YEARS if y < int(config.TEST_START[:4])]
-    print(f"\n{'=' * 78}\n=== Method bake-off: {panel} panel, h={h}, "
-          f"folds {years[0]}-{years[-1]} (pre-test only)\n{'=' * 78}")
-    rows = []
-    for m in METHODS:
-        try:
-            r = run_method(m, panel, h, years)
-        except Exception as exc:
-            print(f"  {m.name:<14} FAILED: {exc}")
-            continue
-        rows.append(r)
-        print(f"  {r['method']:<14} skill {r['skill_mean']:+.3f} +/- {r['skill_std']:.3f}"
-              f"  (SE {r['skill_se']:.3f})  QLIKE gain {r['qlike_gain']:+.4f}"
-              f"  dir {r['dir_accuracy']:.3f}  {r['years_positive']}/{r['n_folds']} yrs+")
-    base = next((r for r in rows if r["method"] == "incumbent"), None)
-    if base is not None:
-        print(f"\n  Paired vs incumbent (same folds; t > 2 = clears noise):")
-        for r in rows:
-            if r["method"] == "incumbent":
-                continue
-            v = paired_verdict(r, base)
-            r.update({f"paired_{k}": val for k, val in v.items()})
-            verdict = ("ADOPT" if v["t"] is not np.nan and v["t"] > 2 and v["delta"] > 0
-                       else "hold")
-            print(f"    {verdict:<6} {r['method']:<14} delta {v['delta']:+.3f} "
-                  f"+/- {v['delta_se']:.3f}  t={v['t']:+.2f}  "
-                  f"wins {v['wins']}/{v['n']}")
 
-    out = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")}
-                        for r in rows])
-    return out.sort_values("skill_mean", ascending=False).reset_index(drop=True)
+    tables, mcs = [], pd.DataFrame()
+    for label, per_year in GRANULARITIES:
+        print(f"\n{'=' * 78}\n=== Method bake-off: {panel} panel, h={h}, "
+              f"{label} folds {years[0]}-{years[-1]} (pre-test only)\n{'=' * 78}")
+        rows = []
+        for m in METHODS:
+            try:
+                r = run_method(m, panel, h, years, per_year)
+            except Exception as exc:
+                print(f"  {m.name:<14} FAILED: {exc}")
+                continue
+            r["granularity"] = label
+            rows.append(r)
+            print(f"  {r['method']:<14} skill {r['skill_mean']:+.3f} "
+                  f"+/- {r['skill_std']:.3f}  (SE {r['skill_se']:.3f})  "
+                  f"QLIKE gain {r['qlike_gain']:+.4f}  dir {r['dir_accuracy']:.3f}  "
+                  f"{r['years_positive']}/{r['n_folds']} folds+")
+
+        base = next((r for r in rows if r["method"] == "incumbent"), None)
+        if base is not None:
+            print(f"\n  Paired vs incumbent (same folds; t > {M.ADOPT_T} on skill AND QLIKE):")
+            for r in rows:
+                if r["method"] == "incumbent":
+                    r["adopts"] = False
+                    continue
+                v = paired_verdict(r, base)
+                vq = paired_verdict(r, base, "_per_fold_qlike")
+                r.update({f"paired_{k}": val for k, val in v.items()})
+                r.update({f"paired_qlike_{k}": val for k, val in vq.items()})
+                r["adopts"] = M.adopts(v) and M.adopts(vq)
+                print(f"    {'ADOPT' if r['adopts'] else 'hold':<6} {r['method']:<14} "
+                      f"delta {v['delta']:+.3f} +/- {v['delta_se']:.3f}  t={v['t']:+.2f}  "
+                      f"t_qlike={vq['t']:+.2f}  wins {v['wins']}/{v['n']}")
+
+        # The MCS is reported once, on annual folds: it is a statement about per-observation
+        # loss, and both granularities score the very same observations.
+        if per_year == 1:
+            mcs = _mcs_table(rows, panel, h)
+
+        tables.append(pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")}
+                                    for r in rows]))
+
+    out = pd.concat(tables, ignore_index=True)
+    if not mcs.empty:
+        out = out.merge(mcs[["model", "mcs_pvalue", "in_mcs"]],
+                        left_on="method", right_on="model", how="left").drop(columns="model")
+
+    # The verdict is the intersection: a method ships only if it clears the bar everywhere.
+    passed = out.groupby("method")["adopts"].all()
+    winners = [m for m, ok in passed.items() if ok]
+    print(f"\n  === {panel}: adopted at BOTH granularities ===")
+    print(f"    {', '.join(winners) if winners else 'nothing - the incumbent stands'}")
+    split = [m for m in out[out["adopts"]]["method"].unique() if m not in winners]
+    if split:
+        print(f"    (cleared at ONE granularity only, therefore not adopted: "
+              f"{', '.join(split)})")
+    return out.sort_values(["granularity", "skill_mean"],
+                           ascending=[True, False]).reset_index(drop=True), mcs
 
 
 def main() -> None:
     config.ensure_dirs()
-    out = pd.concat([bake_off(p) for p in ("market", "sector")], ignore_index=True)
+    tables, mcs_tables = [], []
+    for p in ("market", "sector"):
+        out, mcs = bake_off(p)
+        tables.append(out)
+        if not mcs.empty:
+            mcs_tables.append(mcs)
     path = config.REPORT_DIR / "method_bakeoff.csv"
-    out.to_csv(path, index=False)
+    pd.concat(tables, ignore_index=True).to_csv(path, index=False)
     print(f"\nWrote -> {path}")
+    if mcs_tables:
+        mpath = config.REPORT_DIR / "model_confidence_set.csv"
+        pd.concat(mcs_tables, ignore_index=True).to_csv(mpath, index=False)
+        print(f"Wrote -> {mpath}")
 
 
 if __name__ == "__main__":

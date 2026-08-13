@@ -32,10 +32,15 @@ def qlike(y_log_vol, pred_log_vol) -> float:
     estimate of true volatility, and QLIKE is one of the few losses whose ranking of
     forecasts survives that noise without bias (Patton 2011). Lower is better.
     """
+    return float(np.mean(qlike_obs(y_log_vol, pred_log_vol)))
+
+
+def qlike_obs(y_log_vol, pred_log_vol) -> np.ndarray:
+    """Per-observation QLIKE. The Model Confidence Set needs the loss series, not its mean."""
     y = np.asarray(y_log_vol, float)
     p = np.asarray(pred_log_vol, float)
     d = np.clip(2.0 * (y - p), -20, 20)          # guard the exponential against outliers
-    return float(np.mean(2.0 * p + np.exp(d)))
+    return 2.0 * p + np.exp(d)
 
 
 def regression_metrics(y_true, y_pred, y_persist=None) -> dict:
@@ -90,6 +95,152 @@ def regime_metrics(true_regime, pred_regime) -> dict:
         # Stressed periods are the ones that matter; recall on class 2 alone.
         "stressed_recall": float(((p == 2) & (t == 2)).sum() / max((t == 2).sum(), 1)),
     }
+
+
+# ---------------------------------------------------------------------------
+# Comparing two forecasters
+# ---------------------------------------------------------------------------
+ADOPT_T = 2.0          # the bar a challenger must clear, used by every selection step
+
+
+def paired_test(cand_folds, base_folds) -> dict:
+    """Compare a candidate to an incumbent fold by fold.
+
+    Comparing two marginal means and their separate standard errors is the wrong test here,
+    and it fails in a specific way that matters: an *unstable* incumbent has a large
+    standard error, which inflates the bar a challenger must clear — so the noisier the
+    thing being replaced, the harder it becomes to replace it. Exactly backwards.
+
+    Every candidate is evaluated on the same folds, so the differences are paired and most
+    of the shared year-to-year variation cancels. The test is on the mean of the per-fold
+    difference. `t > ADOPT_T` with a positive delta is the project-wide adoption bar; this
+    is the only implementation of it.
+    """
+    a = np.asarray(cand_folds, float)
+    b = np.asarray(base_folds, float)
+    n = min(len(a), len(b))
+    if n < 3:
+        return {"delta": np.nan, "delta_se": np.nan, "t": np.nan, "wins": 0, "n": n}
+    d = a[:n] - b[:n]
+    se = float(d.std(ddof=1) / np.sqrt(n))
+    mean = float(d.mean())
+    if se > 0:
+        t = mean / se
+    elif mean == 0:
+        t = np.nan          # identical on every fold — the same forecaster twice over
+    else:
+        # A difference with no spread at all: the candidate wins (or loses) by the same
+        # margin on every single fold. That is maximal evidence, not missing evidence, so it
+        # must not fall through to NaN and be silently treated as "inconclusive".
+        t = np.inf if mean > 0 else -np.inf
+    return {
+        "delta": mean,
+        "delta_se": se,
+        "t": float(t),
+        "wins": int((d > 0).sum()),
+        "n": n,
+    }
+
+
+def adopts(verdict: dict) -> bool:
+    """Does this paired verdict clear the adoption bar?"""
+    t = verdict.get("t", np.nan)
+    # `not np.isnan` rather than `isfinite`: an infinite t means a difference with zero
+    # spread across folds, which adopts.
+    return bool(not np.isnan(t) and t > ADOPT_T and verdict.get("delta", 0) > 0)
+
+
+# ---------------------------------------------------------------------------
+# Model Confidence Set (Hansen, Lunde & Nason 2011)
+# ---------------------------------------------------------------------------
+def _block_bootstrap_indices(n: int, n_boot: int, block: int, rng) -> np.ndarray:
+    """Circular block bootstrap index matrix, shape (n_boot, n).
+
+    Blocks rather than individual observations because volatility forecast errors are
+    strongly autocorrelated; an i.i.d. bootstrap would understate their variance and make
+    every model look more distinguishable than it is.
+    """
+    n_blocks = int(np.ceil(n / block))
+    starts = rng.integers(0, n, size=(n_boot, n_blocks))
+    offsets = np.arange(block)
+    idx = (starts[:, :, None] + offsets[None, None, :]) % n
+    return idx.reshape(n_boot, -1)[:, :n]
+
+
+def model_confidence_set(losses: pd.DataFrame, alpha: float = 0.10,
+                         n_boot: int = 1000, block: int = 20,
+                         seed: int = 42) -> pd.DataFrame:
+    """The set of models that cannot be distinguished from the best one.
+
+    Picking the single lowest average loss and calling it the winner overstates what the
+    data supports: with a few hundred overlapping observations, several models are usually
+    within noise of each other, and which one comes first is close to a coin flip. The MCS
+    answers the question that can actually be answered — *which models can be ruled out?* —
+    and returns everything else. It is the more conservative statement, and the standard
+    one in this literature.
+
+    Parameters
+    ----------
+    losses : (n_observations x n_models) per-observation loss, lower is better
+    alpha  : models with an MCS p-value below this are eliminated
+
+    Returns a frame with one row per model: mean loss, MCS p-value, and whether it survived.
+    """
+    names = list(losses.columns)
+    # Complete cases only, and the reported mean loss is computed on the same rows the test
+    # uses — a mean over a different row set than the comparison would be a different number
+    # from the one the ranking is based on.
+    complete = losses.dropna()
+    L = complete.to_numpy(float)
+    n = len(L)
+    if n < 30 or len(names) < 2:
+        return pd.DataFrame({"model": names, "mean_loss": losses.mean().to_numpy(),
+                             "mcs_pvalue": np.nan, "in_mcs": True})
+
+    rng = np.random.default_rng(seed)
+    idx = _block_bootstrap_indices(n, n_boot, block, rng)
+
+    # Bootstrap the per-model mean losses ONCE. Every statistic below is a linear function
+    # of these means, so re-drawing inside the elimination loop would only add cost and
+    # sampling noise. Chunked because L[idx] materialises n_boot x n x m floats.
+    boot_L = np.empty((n_boot, L.shape[1]))
+    for s in range(0, n_boot, 50):
+        e = min(s + 50, n_boot)
+        boot_L[s:e] = L[idx[s:e]].mean(axis=1)
+    mean_L = L.mean(axis=0)
+
+    alive = list(range(len(names)))
+    pvalue = {}
+    running = 0.0
+    while len(alive) > 1:
+        # d_i = model i's loss minus the average loss of the surviving set.
+        dbar = mean_L[alive] - mean_L[alive].mean()
+        boot = boot_L[:, alive] - boot_L[:, alive].mean(axis=1, keepdims=True)
+        sd = np.sqrt(np.maximum(((boot - dbar) ** 2).mean(axis=0), 1e-18))
+        t = dbar / sd
+        t_boot = (boot - dbar) / sd
+        # Range statistic: is the WORST surviving model worse than bootstrap noise allows?
+        p = float((t_boot.max(axis=1) > t.max()).mean())
+        running = max(running, p)                        # p-values are made monotone
+        worst = alive[int(np.argmax(t))]
+        pvalue[worst] = running
+        if running >= alpha:
+            # Nothing more can be eliminated: everything still alive is in the set.
+            for i in alive:
+                pvalue.setdefault(i, running)
+            break
+        alive.remove(worst)
+    for i in alive:
+        pvalue.setdefault(i, 1.0)
+
+    out = pd.DataFrame({
+        "model": names,
+        "mean_loss": complete.mean().reindex(names).to_numpy(float),
+        "n_obs": n,
+        "mcs_pvalue": [pvalue[i] for i in range(len(names))],
+    })
+    out["in_mcs"] = out["mcs_pvalue"] >= alpha
+    return out.sort_values("mean_loss").reset_index(drop=True)
 
 
 def summarize_folds(folds: pd.DataFrame, by: list[str], value: str = "r2") -> pd.DataFrame:

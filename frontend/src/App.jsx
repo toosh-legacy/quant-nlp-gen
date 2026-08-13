@@ -5,6 +5,7 @@ import { SectorTable } from "./components/SectorTable";
 import { HistoryChart, EquityChart } from "./components/Charts";
 import { TrackRecord } from "./components/TrackRecord";
 import { State } from "./components/ui";
+import { folds } from "./format";
 
 const TABS = [
   ["dashboard", "Dashboard"],
@@ -129,6 +130,9 @@ export default function App() {
 
 function Method({ perf, forecast }) {
   const meta = forecast.meta || {};
+  // Read from the walk-forward folds rather than written into the copy: this count grew
+  // from 13 to 15 once and the page did not notice.
+  const foldCount = folds(perf, "market", meta.horizon ?? 10)?.n;
   return (
     <>
       <h3 className="section-title">How it works</h3>
@@ -157,7 +161,7 @@ function Method({ perf, forecast }) {
             <li><strong>Chronological only.</strong> Train on the past, test on the future. Days are never shuffled.</li>
             <li><strong>No lookahead.</strong> Every input uses only data up to its own day, enforced by a test that alters a future bar and asserts no past feature moves.</li>
             <li><strong>Boundary embargo.</strong> A 10-day outcome spans 10 days, so rows whose outcome window crosses a train/test boundary are purged rather than leaked.</li>
-            <li><strong>Walk-forward.</strong> Retrained every year, scored on the following year — 13 independent out-of-sample windows, reported with their spread.</li>
+            <li><strong>Walk-forward.</strong> Retrained every year, scored on the following year — {foldCount ?? "multiple"} independent out-of-sample windows, reported with their spread.</li>
             <li><strong>Baselines everywhere.</strong> Persistence for the level, majority for the classes. A score without its baseline is not reported.</li>
             <li><strong>Frozen regime bands.</strong> Calm/normal/stressed thresholds come from training data only, so they cannot drift with the period being scored.</li>
             <li><strong>Negative results kept.</strong> Macro data hurt and was dropped; the 21-day horizon was unreliable and is not shown.</li>

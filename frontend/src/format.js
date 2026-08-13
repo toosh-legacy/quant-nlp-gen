@@ -17,6 +17,25 @@ export const num = (v, d = 2) =>
 export const pct01 = (v, d = 0) =>
   v === null || v === undefined || Number.isNaN(v) ? "—" : `${(v * 100).toFixed(d)}%`;
 
+// Walk-forward fold counts, read from the API rather than written into the copy.
+//
+// These were hardcoded, and the walk-forward grew from 13 years to 15 without them: the
+// dashboard published "8 of 13 years" for the withheld horizon while the config file and
+// the README said "12 of 15". Deriving them means the page cannot drift again — the number
+// on screen is the number in `walkforward_folds.csv`.
+export const folds = (perf, panel, horizon) => {
+  const row = (perf?.stability || []).find(
+    (r) => r.panel === panel && Number(r.horizon) === Number(horizon)
+  );
+  return row ? { n: row.n, positive: row.years_positive } : null;
+};
+
+// "12 of 15" — or nothing at all, rather than a stale guess.
+export const foldsPhrase = (perf, panel, horizon) => {
+  const f = folds(perf, panel, horizon);
+  return f ? `${f.positive} of ${f.n}` : null;
+};
+
 export const FEATURES = {
   log_rv_d: ["Yesterday's move", "How far the market moved in the last session."],
   log_rv_w: ["1-week realized vol", "Actual volatility over the past five sessions."],
@@ -38,8 +57,30 @@ export const FEATURES = {
   vix_chg_5: ["VIX 1-week change", "Is priced-in fear rising or falling?"],
   vix_rel_21: ["VIX vs its month average", "Elevated relative to its own recent norm."],
   vix_term: ["VIX term structure", "3-month vs spot VIX. Negative means near-term stress is priced above longer-term."],
+  vix_term_short: ["Near-term VIX slope", "30-day vs 9-day VIX. The first part of the curve to invert when a shock lands."],
+  vix_term_long: ["Far-term VIX slope", "6-month vs 3-month VIX — how much stress is priced beyond the immediate."],
+  vix_curve: ["VIX curve shape", "Whether the term structure is bowed, not just tilted."],
   vvix_log: ["Vol-of-vol (VVIX)", "How unstable the volatility estimate itself is."],
+  vix_vol_pk: ["VIX intraday range", "How far the fear gauge itself swung within the day."],
+  skew_log: ["Option skew (SKEW)", "What the option market pays for crash protection, beyond the VIX level."],
   vix_rv_gap: ["Variance risk premium", "Implied minus realized: trouble priced in that hasn't shown up in returns yet."],
+  vix_rv_gap_short: ["Near-term variance premium", "The same gap at the 9-day horizon, matched to shorter forecasts."],
+  rvx_vix_spread: ["Small-cap vol premium", "Russell 2000 vs S&P implied vol — is stress broad or concentrated?"],
+  vxn_vix_spread: ["Nasdaq vol premium", "Nasdaq-100 vs S&P implied vol."],
+  ovx_log: ["Oil volatility (OVX)", "Crude-oil implied vol — the cross-asset shock channel."],
+
+  log_bpv_m: ["Smooth volatility", "Bipower variation: the part of volatility left after jumps are stripped out."],
+  jump_share_m: ["Jump share", "How much of the past month's variance came from sudden gaps rather than drift."],
+  log_jump_d: ["Today's jump", "The discontinuous part of today's move."],
+  rq_ratio: ["Estimate reliability", "How heavy-tailed recent returns were — high means today's vol reading is noisy."],
+  log_rs_down_m: ["Down-day variance", "Variance contributed by falling days only."],
+  log_rs_up_m: ["Up-day variance", "Variance contributed by rising days only."],
+  semivar_skew_m: ["Down/up asymmetry", "How much more of the variance came from falls than rises."],
+  log_rs_d: ["Drift-robust range", "Rogers-Satchell: the day's range, corrected for a trending market."],
+  log_rs_m: ["1-month drift-robust range", "Rogers-Satchell averaged over a month."],
+  log_yz_w: ["1-week Yang-Zhang vol", "The most efficient daily estimator, including the overnight gap."],
+  log_yz_m: ["1-month Yang-Zhang vol", "Same estimator over a month — the cleanest read on the current level."],
+  yz_gap_share: ["Overnight share", "How much of the month's variance happened between the close and the next open."],
 
   disp_log: ["Stock dispersion", "How differently individual stocks moved today."],
   disp_chg_5: ["Dispersion change", "Is the cross-section spreading out or compressing?"],

@@ -153,3 +153,92 @@ def test_pooled_panels_declare_their_tags():
                 f"{panel} trains pooled but is missing {config.POOL_TAGS}"
         else:
             assert not any(t in feats for t in config.POOL_TAGS)
+
+
+# ---------------------------------------------------------------------------
+# The paired adoption test — the single bar every selection step in the project uses
+# ---------------------------------------------------------------------------
+def test_paired_test_needs_at_least_three_folds():
+    """Two folds cannot support a t-statistic; it must decline rather than invent one."""
+    v = M.paired_test([1.0, 2.0], [0.0, 1.0])
+    assert np.isnan(v["t"])
+    assert not M.adopts(v)
+
+
+def test_paired_test_is_paired_not_marginal():
+    """A consistent small edge must beat a noisy large one — that is the whole point.
+
+    Both candidates average the same improvement over the incumbent. One does it every
+    fold; the other swings wildly. An unpaired comparison of marginal means cannot tell
+    them apart. The paired test must.
+    """
+    base = np.array([0.10, 0.40, 0.05, 0.30, 0.20, 0.35])
+    steady = base + 0.02
+    erratic = base + np.array([0.52, -0.48, 0.50, -0.46, 0.48, -0.44])
+    assert M.paired_test(steady, base)["t"] > M.paired_test(erratic, base)["t"]
+
+
+def test_paired_test_rejects_a_candidate_that_is_merely_lucky_once():
+    base = np.zeros(8)
+    cand = np.array([0.0, 0.0, 0.0, 0.9, 0.0, 0.0, 0.0, 0.0])
+    v = M.paired_test(cand, base)
+    assert v["delta"] > 0, "the mean really is higher"
+    assert not M.adopts(v), "but one lucky fold must not clear the adoption bar"
+
+
+def test_adoption_bar_requires_a_positive_delta():
+    """A significant result in the WRONG direction must never adopt."""
+    rng = np.random.default_rng(3)
+    base = rng.normal(0, 0.1, 12)
+    worse = base - 0.5 + rng.normal(0, 0.01, 12)
+    v = M.paired_test(worse, base)
+    assert v["t"] < 0 and not M.adopts(v)
+
+
+def test_a_difference_with_no_spread_adopts_rather_than_returning_nan():
+    """Winning by the same margin on every fold is maximal evidence, not missing evidence.
+
+    Dividing by a zero standard error is the obvious way to turn the strongest possible
+    result into a NaN and silently file it as "inconclusive".
+    """
+    base = np.arange(8, dtype=float)
+    v = M.paired_test(base + 0.5, base)
+    assert v["t"] == np.inf and M.adopts(v)
+    assert not M.adopts(M.paired_test(base - 0.5, base))
+
+
+# ---------------------------------------------------------------------------
+# Model Confidence Set
+# ---------------------------------------------------------------------------
+def _loss_frame(means, n=600, sd=0.3, seed=0):
+    rng = np.random.default_rng(seed)
+    shared = rng.normal(0, sd, n)      # common shocks, as real forecast errors have
+    return pd.DataFrame({name: shared + rng.normal(mu, sd * 0.3, n)
+                         for name, mu in means.items()})
+
+
+def test_mcs_eliminates_a_clearly_worse_model():
+    out = M.model_confidence_set(_loss_frame({"good": 1.0, "awful": 3.0}), n_boot=300)
+    kept = set(out[out["in_mcs"]]["model"])
+    assert "good" in kept and "awful" not in kept
+
+
+def test_mcs_keeps_models_it_cannot_separate():
+    """Two models with the same loss must BOTH survive. The MCS's job is to decline to
+    pick a winner when the data does not support one."""
+    out = M.model_confidence_set(_loss_frame({"a": 1.0, "b": 1.0}), n_boot=300)
+    assert out["in_mcs"].all()
+
+
+def test_mcs_is_more_conservative_than_taking_the_minimum():
+    """The set must never be empty, and must always contain the lowest-loss model."""
+    out = M.model_confidence_set(
+        _loss_frame({"a": 1.0, "b": 1.02, "c": 2.5}), n_boot=300)
+    assert out["in_mcs"].any()
+    assert bool(out.iloc[0]["in_mcs"]), "the best model must always be in the set"
+
+
+def test_mcs_declines_on_too_few_observations():
+    """With almost no data it must return everything, not a confident ranking."""
+    out = M.model_confidence_set(_loss_frame({"a": 1.0, "b": 5.0}, n=10), n_boot=50)
+    assert out["in_mcs"].all()

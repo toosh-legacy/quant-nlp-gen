@@ -27,31 +27,105 @@ def _wide(df: pd.DataFrame, field: str = "close") -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Family: vix — the implied-volatility complex
 # ---------------------------------------------------------------------------
-VIX_FEATURES = ["vix_log", "vix_chg_5", "vix_rel_21", "vix_term", "vvix_log", "vix_rv_gap"]
+# Two families, split by how far back the underlying index goes — because a feature costs
+# training history, and that cost has to be priced separately from its information content.
+#
+# Every column here is dropped by `dataset.labelled` on any row where it is missing, so
+# adding a series that begins in 2011 does not merely add a column: it deletes every
+# training row before 2011, including the 2008 crisis, which is the most informative
+# volatility episode in the sample. Bundling the 9-day index in with the rest would have
+# made the whole complex look bad for a reason that has nothing to do with what the option
+# market knows.
+#
+# `vix` is bounded by VIX3M (from 2009-09). `vix_short` is bounded by VIX9D (from 2011-01)
+# and is offered on its own so the selection study can decide whether the near end of the
+# curve is worth two more years of lost history.
+VIX_FEATURES = [
+    # Level and momentum.
+    "vix_log", "vix_chg_5", "vix_rel_21",
+    # Term structure: the classic 3-month slope and the far end.
+    "vix_term", "vix_term_long",
+    # Uncertainty about the level itself, and the shape of the tail.
+    "vvix_log", "vix_vol_pk", "skew_log",
+    # Variance risk premium.
+    "vix_rv_gap",
+    # Cross-asset: is stress concentrated in large caps, or everywhere?
+    "rvx_vix_spread", "vxn_vix_spread", "ovx_log",
+]
+
+# The near end of the term structure. Separate family: costs history back to 2011-01.
+VIX_SHORT_FEATURES = ["vix_term_short", "vix_curve", "vix_rv_gap_short"]
+
+
+def _log_col(w: pd.DataFrame, ticker: str) -> pd.Series:
+    """log of a volatility index, or an all-NaN column if the series was not fetched."""
+    if ticker in w:
+        return np.log(w[ticker] + EPS)
+    return pd.Series(np.nan, index=w.index)
 
 
 def build_vix(vix_df: pd.DataFrame, market_core: pd.DataFrame) -> pd.DataFrame:
-    """Implied vol level, momentum, term structure, vol-of-vol, and the variance premium.
+    """The implied-volatility complex: level, term structure, vol-of-vol, skew, premium.
 
-    `vix_rv_gap` is the variance risk premium in logs: implied minus realized. It is the
-    single most theoretically-motivated column here — when implied sits far above realized
-    the market is already pricing trouble that has not shown up in returns yet.
+    Three ideas beyond the level, each with its own literature:
+
+    **Shape, not just height.** VIX9D / VIX / VIX3M / VIX6M is a term structure, and its
+    slope carries information the level does not. In calm markets the curve is upward
+    sloping (contango); when the short end rises above the long end (backwardation) the
+    market is pricing a shock it expects to pass. A single level cannot say which of those
+    two a reading of 20 is.
+
+    **The variance risk premium.** `vix_rv_gap` is implied minus realized, in logs. It is
+    the most theoretically motivated column here: when implied sits far above realized, the
+    market is already pricing trouble that has not shown up in returns yet. It is computed
+    at two horizons because the premium is horizon-specific — the 9-day index against
+    5-day realized, and the 30-day index against 21-day realized. A forecast at h=5 and one
+    at h=10 are not asking the option market the same question.
+
+    **Vol-of-vol from the range.** `vix_vol_pk` is a Parkinson estimator on VIX's own daily
+    high-low range: how much the market's fear gauge moved *within* the day. This is only
+    available because the Cboe source carries OHLC; the previous close-only feed could
+    express VVIX but not this.
     """
     w = _wide(vix_df)
+    hi, lo = _wide(vix_df, "high"), _wide(vix_df, "low")
     out = pd.DataFrame(index=w.index)
-    vix = w["^VIX"]
-    out["vix_log"] = np.log(vix + EPS)
-    out["vix_chg_5"] = out["vix_log"] - out["vix_log"].shift(5)
-    out["vix_rel_21"] = out["vix_log"] - out["vix_log"].rolling(21).mean()
-    # Term structure: >0 (contango) is calm, <0 (backwardation) is stress.
-    out["vix_term"] = np.log(w["^VIX3M"] + EPS) - out["vix_log"] if "^VIX3M" in w else np.nan
-    out["vvix_log"] = np.log(w["^VVIX"] + EPS) if "^VVIX" in w else np.nan
 
-    # Variance risk premium: VIX is an annualized % ; convert the market's realized log
-    # daily vol to the same units before differencing so the gap is meaningful.
-    rv = market_core.set_index("date")["log_rv_m"]
-    rv_ann = np.log(np.exp(rv) * np.sqrt(config.TRADING_DAYS) * 100.0 + EPS)
-    out["vix_rv_gap"] = (out["vix_log"] - rv_ann.reindex(out.index)).astype(float)
+    vix_log = _log_col(w, "^VIX")
+    out["vix_log"] = vix_log
+    out["vix_chg_5"] = vix_log - vix_log.shift(5)
+    out["vix_rel_21"] = vix_log - vix_log.rolling(21).mean()
+
+    # --- term structure. Positive = contango = calm; negative = backwardation = stress ---
+    v9, v3m, v6m = (_log_col(w, "^VIX9D"), _log_col(w, "^VIX3M"), _log_col(w, "^VIX6M"))
+    out["vix_term"] = v3m - vix_log                 # the classic 3-month/spot slope
+    out["vix_term_short"] = vix_log - v9            # 30-day vs 9-day: the near end
+    out["vix_term_long"] = v6m - v3m                # 6-month vs 3-month: the far end
+    out["vix_curve"] = out["vix_term_long"] - out["vix_term_short"]
+
+    # --- uncertainty about the level, and tail shape -----------------------------------
+    out["vvix_log"] = _log_col(w, "^VVIX")
+    out["skew_log"] = _log_col(w, "^SKEW")
+    if "^VIX" in hi and "^VIX" in lo:
+        rng = np.log((hi["^VIX"] + EPS) / (lo["^VIX"] + EPS))
+        out["vix_vol_pk"] = np.log(np.sqrt((rng ** 2) / (4.0 * np.log(2.0))) + EPS)
+    else:
+        out["vix_vol_pk"] = np.nan
+
+    # --- variance risk premium ----------------------------------------------------------
+    # VIX is an annualized percentage; convert the market's realized log daily vol to the
+    # same units before differencing so the gap means what it says.
+    def _ann(col: str) -> pd.Series:
+        rv = market_core.set_index("date")[col]
+        return np.log(np.exp(rv) * np.sqrt(config.TRADING_DAYS) * 100.0 + EPS).reindex(out.index)
+
+    out["vix_rv_gap"] = (vix_log - _ann("log_rv_m")).astype(float)
+    out["vix_rv_gap_short"] = (v9 - _ann("log_rv_w")).astype(float)
+
+    # --- cross-asset --------------------------------------------------------------------
+    out["rvx_vix_spread"] = _log_col(w, "^RVX") - vix_log      # small caps vs large caps
+    out["vxn_vix_spread"] = _log_col(w, "^VXN") - vix_log      # Nasdaq vs the broad market
+    out["ovx_log"] = _log_col(w, "^OVX")                       # crude oil
     return out.reset_index()
 
 
@@ -164,6 +238,7 @@ def build_sector_xs(sector_core: pd.DataFrame) -> pd.DataFrame:
 FAMILIES: dict[str, list[str]] = {
     "core": [],            # filled in by assemble (the own-history block)
     "vix": VIX_FEATURES,
+    "vix_short": VIX_SHORT_FEATURES,
     "breadth": BREADTH_FEATURES,
     "macro": MACRO_FEATURES,
     "sector_xs": SECTOR_XS_FEATURES,

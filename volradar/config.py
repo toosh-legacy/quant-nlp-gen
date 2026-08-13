@@ -70,10 +70,27 @@ SECTOR_ETFS = {
 # ---------------------------------------------------------------------------
 # Factor-family source series
 # ---------------------------------------------------------------------------
-# Family 1 — the VIX complex. Implied volatility is the market's own forward-looking
-# forecast; the 3-month/spot term structure is the classic stress indicator (below 1 =
-# backwardation = stress). VVIX is the vol-of-vol.
-VIX_TICKERS = ["^VIX", "^VIX3M", "^VVIX"]
+# Family 1 — the implied-volatility complex. Implied volatility is the market's own
+# forward-looking forecast, and it is the predictor the machine-learning volatility
+# literature ranks second only to realized volatility itself.
+#
+# These come from Cboe's own free daily-history CSVs rather than Yahoo (see
+# `data/fetch.py`): the full term structure is published there, with OHLC rather than close
+# alone, and it is the maintained primary source rather than a scrape of one.
+#
+#   VIX / VIX9D / VIX3M / VIX6M  the term structure — 9-day, 30-day, 3-month, 6-month.
+#                                Its *shape* is the stress signal: backwardation (short end
+#                                above long) is the classic one, and the level alone cannot
+#                                express it.
+#   VVIX                         vol-of-vol: how uncertain the option market is about VIX.
+#   SKEW                         option-implied tail asymmetry, orthogonal to the level.
+#   VXN / RVX                    Nasdaq-100 and Russell-2000 implied vol; the spread to VIX
+#                                says whether stress is concentrated or broad.
+#   OVX                          crude-oil implied vol — the cross-asset shock channel.
+#
+# Yahoo tickers are kept as the naming convention so a fallback fetch is a drop-in.
+VIX_TICKERS = ["^VIX", "^VIX9D", "^VIX3M", "^VIX6M", "^VVIX", "^SKEW",
+               "^VXN", "^RVX", "^OVX"]
 
 # Family 3 — macro / rates / credit. Slow-moving but regime-defining.
 #   ^TNX  10-year Treasury yield        ^IRX  13-week T-bill yield  (slope = TNX - IRX)
@@ -87,16 +104,29 @@ MACRO_TICKERS = ["^TNX", "^IRX", "HYG", "LQD", "UUP"]
 # Decided by `volradar/backtest/select_features.py` on walk-forward folds strictly BEFORE
 # TEST_START, so the choice never saw the reporting window.
 #
-# The result is a negative one, and it is the most interesting finding in the project:
-# NONE of the four external factor families reliably improved on the series' own price
-# history. Every candidate set landed within one standard error of core-only across six
-# selection folds, so the one-standard-error rule takes the simplest. The VIX, the
-# cross-sectional correlation of 80 stocks, rates and credit, sector dispersion — each is
-# individually plausible, and each turns out to be already encoded in the realized
-# volatility the model can see directly.
+# The result is a negative one, and it is the most interesting finding in the project: NONE
+# of the ten candidate families reliably improves on the series' own price history. That now
+# includes the own-history blocks (jump, semivar, range_ext — the standard HAR-J and HAR-RS
+# specifications plus Rogers-Satchell/Yang-Zhang) as well as the external ones. Realized
+# volatility turns out to be a remarkably complete summary of a market's own risk state, and
+# the signals that look independent are largely reflections of it.
 #
-# The families remain implemented and are re-tested by the ablation on every run. If a
-# future window shows one clearly earning its place, adding it here is a one-line change.
+# **The rule that produced this changed, and the answer did not.** It was previously a
+# one-standard-error rule, which no other part of this project used — `methods.py` and
+# `settle.py` both require a paired fold-by-fold t-test at t > 2. Two bars in one repo means
+# the answer depends on which file asks the question. There is now one bar everywhere
+# (`metrics.paired_test`): paired against core-only on identical folds, t > 2, on skill AND
+# QLIKE, at BOTH annual and semi-annual fold slicings.
+#
+# One finding is worth recording here because it is easy to lose: the VIX complex splits the
+# two loss functions. It clears the bar on QLIKE (sector t = +2.72 annual, +2.62
+# semi-annual) and fails on skill (−1.48, −1.33). Implied volatility improves the forecast
+# where under-forecasting risk is punished and not where squared error is, which is a
+# statement about *where* it helps rather than whether it works. It does not ship because
+# the rule requires both, and the rule was fixed before the numbers were seen.
+#
+# The families remain implemented and are re-tested on every run. If a future window shows
+# one clearly earning its place, adding it here is a one-line change.
 SELECTED_FAMILIES: dict[str, list[str]] = {
     "market": [],
     "sector": [],

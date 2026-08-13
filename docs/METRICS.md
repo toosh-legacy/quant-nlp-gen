@@ -60,7 +60,10 @@ the right stability check.
 
 - **0** = no better than assuming nothing changes · **0.35** = removed 35% of the
   baseline's squared error.
-- **Good here:** 0.30–0.43 at 5 and 10 days, positive in **13 of 13** walk-forward years.
+- **Good here:** positive in **every** walk-forward year at the shipped horizons. The exact
+  per-year counts are regenerated into `data/reports/walkforward_folds.csv` and shown on the
+  dashboard; they are not repeated here, because this file went stale the last time the
+  walk-forward grew and a hand-written count is the thing that goes stale.
 
 ### RMSE / MAE
 Typical error size in log units. Useful for comparing models on the same target, useless
@@ -119,17 +122,66 @@ the point.
 
 ### Walk-forward ⭐
 One test window gives one number that might be luck. Walk-forward retrains at the start of
-each year on all prior data and scores the following year — **13 independent out-of-sample
-windows**. Report the **mean and the spread**:
+each year on all prior data and scores the following year, giving one independent
+out-of-sample window per year from `config.WALK_YEARS`. Report the **mean and the spread**:
 
-- `+0.355 ± 0.204` — mean well clear of the spread, and positive in every year. Real.
-- `−0.268 ± 1.423` — spread dwarfs the mean. **No edge.** (This is the 21-day horizon, which
-  is why it is not shipped.)
+- mean well clear of the spread, and positive in every year → real.
+- a spread that dwarfs the mean → **no edge**, however good the mean looks. That is the
+  shape the 21-day horizon has, which is why it is measured but not shipped.
+
+The live numbers are in `data/reports/walkforward_summary.csv`.
 
 ### Frozen regime thresholds
 Calm/normal/stressed cut points come from the **training period only**. Computing them on
 the full sample would let a quiet decade silently redefine "stressed" using future
 information.
+
+---
+
+## How anything gets adopted
+
+Every "should we change this?" question — a feature family, a training scheme, a model, an
+alarm rule — is decided the same way, by one function (`metrics.paired_test`).
+
+### The paired test ⭐
+Score the candidate and the incumbent on **identical** pre-`TEST_START` folds, take the
+per-fold *difference*, and test whether its mean is far from zero. Adopt at **t > 2** with a
+positive difference.
+
+Why paired rather than comparing two means and their separate spreads: an unstable incumbent
+has a large standard error, which *inflates* the bar a challenger has to clear. The noisier
+the thing you are replacing, the harder it becomes to replace — exactly backwards. Pairing
+cancels the shared year-to-year variation, because both models saw the same years.
+
+Two extra conditions, both of which have changed a verdict in practice:
+
+- **Both metrics.** Skill vs persistence *and* QLIKE. A change that improves one and harms
+  the other is telling you it moved the forecast somewhere specific — see the VIX result in
+  the README — and that is a finding to report, not a licence to pick the flattering metric.
+- **Both fold granularities.** Annual folds and semi-annual folds. Halving the folds adds
+  independent evaluation points without touching the test period or changing what any model
+  trains on. A result that appears at one calendar slicing and vanishes at another is not a
+  result; this is how the jump features were caught, twice.
+
+### Model Confidence Set (MCS) ⭐
+Hansen, Lunde & Nason (2011). Instead of naming the single lowest-loss model, the MCS returns
+**every model that cannot be statistically distinguished from the best one**, at a chosen
+confidence level, using a block bootstrap over per-observation QLIKE.
+
+This is the more conservative claim, and the honest one for a table where the top several
+entries sit within noise of each other. "Model X won" invites the reader to believe the
+ordering is real; "these six are indistinguishable, and these three are ruled out" is what
+the data actually supports. Blocks rather than individual observations because volatility
+forecast errors are strongly autocorrelated, and an i.i.d. bootstrap would understate their
+variance and make every model look more separable than it is.
+
+### Alarm MCC
+The alarm head (`backtest/alarm.py`) is graded on **MCC of the binary stressed/not label**,
+never on R². A quantile or classifier head does not estimate the conditional mean, so
+squared error condemns it by construction — and recall alone is trivially gamed by alarming
+every day. MCC collapses to zero both for a rule that always fires and for one that never
+does. Detection rate, lead time, precision and false-alarm rate are reported next to it,
+descriptively.
 
 ---
 
@@ -170,14 +222,24 @@ the *forecast* works.
 | metric | range | good here | fooled by |
 |---|:---:|---|---|
 | **R² (pooled OOS)** | ≤1 | ~0.45 | the scoring window's own variance |
-| **Skill vs persistence** ⭐ | ≤1 | 0.30–0.43, positive every year | almost nothing |
+| **Skill vs persistence** ⭐ | ≤1 | positive every year | a market with no forecastable vol — see below |
+| **QLIKE** | — | lower; report the gain vs persistence | little; robust to a noisy proxy |
 | **Accuracy** | 0–1 | ~0.70 vs ~0.51 baseline | class imbalance |
 | **MCC** ⭐ | −1…1 | 0.42–0.47 | almost nothing |
 | **Regime accuracy** | 0–1 | must beat majority baseline | a dominant class |
 | **Detection rate** | 0–1 | read with false-alarm rate | alarming constantly |
 | **Sharpe** | — | vs persistence arm, not buy & hold | ignoring costs |
 | **mean ± std** | — | mean > 2× std | one lucky window |
+| **Paired t** ⭐ | — | > 2 on both metrics, both fold slicings | a single lucky fold |
+| **In the MCS** | yes/no | the honest alternative to "model X won" | an i.i.d. bootstrap on autocorrelated errors |
+| **Alarm MCC** | −1…1 | > the mean-threshold rule's | nothing; unlike recall it cannot be gamed |
 
 **One sentence:** *accuracy says how often you were right; the baseline says how many of
-those were free; skill vs persistence says whether forecasting beat merely measuring; and
-mean ± std says whether any of it repeats.*
+those were free; skill vs persistence says whether forecasting beat merely measuring; R²
+says whether there was signal there at all; and mean ± std says whether any of it repeats.*
+
+**The one trap worth repeating.** Skill vs persistence cannot establish predictability on its
+own. On a simulated market built to have *no* forecastable volatility it still reads **+0.43**,
+because the persistence baseline is then nothing but measurement noise from a short window, so
+predicting the unconditional mean beats it without forecasting anything. R² correctly reads
+negative there. The two must be read together.

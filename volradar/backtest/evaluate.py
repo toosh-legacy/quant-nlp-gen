@@ -45,9 +45,8 @@ def fixed_split(panel: str, quiet: bool = False) -> pd.DataFrame:
         y_test = test[config.fwd_col(h)].to_numpy(float)
         persist = test[config.persist_col(h)].to_numpy(float)
 
-        for name, fn in E.LADDER:
-            model = fn(train, features, h, params) if name == "gbm" else fn(train, features, h)
-            pred = model.predict(test)
+        for name, _ in E.LADDER:
+            pred = E.fit_by_name(name, train, features, h, params).predict(test)
             row = {"panel": panel, "horizon": h, "model": name,
                    "n_train": len(train), "n_test": len(test)}
             row.update(M.regression_metrics(y_test, pred, persist))
@@ -81,10 +80,7 @@ def walk_forward(panel: str, model_name: str = "gbm") -> tuple[pd.DataFrame, pd.
             # Minimum sizes so a half-empty first fold cannot dominate the mean.
             if len(train) < 400 or len(test) < 60:
                 continue
-            fn = dict(E.LADDER)[model_name]
-            model = (fn(train, features, h, params) if model_name == "gbm"
-                     else fn(train, features, h))
-            pred = model.predict(test)
+            pred = E.fit_by_name(model_name, train, features, h, params).predict(test)
             y = test[config.fwd_col(h)].to_numpy(float)
             per = test[config.persist_col(h)].to_numpy(float)
             fold = {"panel": panel, "horizon": h, "year": year, "model": model_name,

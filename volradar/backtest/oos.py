@@ -46,9 +46,7 @@ def build_oos(panel: str, h: int | None = None, model_name: str = "gbm") -> pd.D
         test = D.time_slice(sub, cutoff, f"{year + 1}-01-01")
         if len(train) < 400 or len(test) < 60:
             continue
-        fn = dict(E.LADDER)[model_name]
-        model = (fn(train, features, h, params) if model_name == "gbm"
-                 else fn(train, features, h))
+        model = E.fit_by_name(model_name, train, features, h, params)
         out = test[[c for c in keep if c in test.columns]].copy()
         out["pred"] = model.predict(test)
         # Conformal interval, calibrated on the tail of THIS fold's training data only.

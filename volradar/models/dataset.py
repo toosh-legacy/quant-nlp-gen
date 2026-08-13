@@ -42,6 +42,26 @@ def xy(df: pd.DataFrame, features: list[str], h: int) -> tuple[np.ndarray, np.nd
     return df[features].to_numpy(float), df[config.fwd_col(h)].to_numpy(float)
 
 
+def fold_edges(years: list[int], per_year: int = 1) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Walk-forward fold boundaries. `per_year=2` splits each year in half.
+
+    Splitting folds more finely is a legitimate way to gain statistical power for a paired
+    comparison: it adds independent evaluation points without touching the test period or
+    changing what any model is trained on before its own cutoff. It is not a second bite at
+    the apple — the same data is simply scored in smaller, still-disjoint blocks.
+
+    Every selection step in the project reports at both granularities and adopts only when
+    they agree, so a result that depends on how the folds were cut cannot be shipped.
+    """
+    out = []
+    for y in years:
+        for k in range(per_year):
+            m0 = 1 + (12 // per_year) * k
+            start = pd.Timestamp(f"{y}-{m0:02d}-01")
+            out.append((start, start + pd.DateOffset(months=12 // per_year)))
+    return out
+
+
 def regime_thresholds(train_df: pd.DataFrame, h: int) -> tuple[float, float]:
     """Calm/normal/stressed cut points, taken from the TRAINING period only.
 

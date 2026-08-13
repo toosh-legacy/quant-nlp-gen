@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+import pandas as pd
 
 from volradar import config
 
@@ -233,6 +234,132 @@ def fit_shar(train, _features, h: int) -> Fitted:
     return _fit_ridge(train, SHAR_COLS, h, "SHAR")
 
 
+# ---------------------------------------------------------------------------
+# Neural network
+# ---------------------------------------------------------------------------
+# Deliberately small. Christensen, Siggaard & Veliyev find a two-layer network is the best
+# single model for realized volatility once the feature set is wider than plain HAR, and
+# Zhang, Cucuringu et al. find neural nets dominate linear and tree models specifically on
+# *pooled* cross-sections of series — which is exactly how the sector panel trains. Both
+# results come from networks of this size, not large ones; capacity is not the binding
+# constraint on a few hundred thousand rows of daily data.
+MLP_DEFAULT = dict(hidden_layer_sizes=(32, 16), alpha=1e-3, learning_rate_init=1e-3)
+MLP_GRID = [
+    {"hidden_layer_sizes": hl, "alpha": a, "learning_rate_init": 1e-3}
+    for hl in ((16,), (32, 16), (64, 32))
+    for a in (1e-4, 1e-3, 1e-2)
+]
+
+
+def fit_mlp(train, features, h: int, params: dict | None = None) -> Fitted:
+    """A small two-layer network on the standardised feature set.
+
+    Standardisation is not optional for a network the way it is optional for trees, so this
+    reuses the same scaler-in-the-Fitted pattern the ridge models use. `early_stopping`
+    holds out the last slice of the training rows internally, which keeps the fit from
+    running away on the folds where training data is thin.
+    """
+    from sklearn.neural_network import MLPRegressor
+    from sklearn.preprocessing import StandardScaler
+
+    # The ladder hands every tuned rung the same `params` object, and for most callers that
+    # object holds GBM capacity settings. Keep only the keys this estimator understands, so
+    # a caller that has not tuned an MLP gets the default rather than a TypeError.
+    p = {k: v for k, v in dict(params or {}).items() if k in MLP_DEFAULT} or dict(MLP_DEFAULT)
+    X = train[features].to_numpy(float)
+    y = train[config.fwd_col(h)].to_numpy(float)
+    sc = StandardScaler().fit(X)
+    # max_iter is a safety stop, not the training schedule — `early_stopping` ends the fit
+    # when a held-out slice stops improving, which is what should terminate it. At 400 the
+    # cap was binding on every market-panel fold (sklearn raised ConvergenceWarning each
+    # time), so the bake-off was comparing a truncated network against fully-fitted rivals
+    # and reporting the result as "neural nets lose here". That is not a fair test.
+    est = MLPRegressor(**p, max_iter=2000, early_stopping=True, n_iter_no_change=20,
+                       random_state=config.RANDOM_SEED).fit(sc.transform(X), y)
+    return Fitted(name="mlp", columns=list(features), estimator=est, scaler=sc, params=p)
+
+
+def tune_mlp(fit_df, val_df, features: list[str], h: int, quiet: bool = False) -> dict:
+    """Pick network size and regularisation on the same held-out slice `tune_gbm` uses."""
+    from sklearn.metrics import r2_score
+
+    y_val = val_df[config.fwd_col(h)].to_numpy(float)
+    best, best_score = MLP_DEFAULT, -np.inf
+    for p in MLP_GRID:
+        try:
+            pred = fit_mlp(fit_df, features, h, p).predict(val_df)
+        except Exception:
+            continue
+        s = r2_score(y_val, pred)
+        if s > best_score:
+            best_score, best = s, p
+    if not quiet:
+        print(f"    h={h:>2} tuned MLP {best}  (val R2={best_score:.3f})")
+    return best
+
+
+# ---------------------------------------------------------------------------
+# Forecast combination
+# ---------------------------------------------------------------------------
+class FittedEnsemble(Fitted):
+    """A weighted average of several fitted models."""
+
+    def predict(self, df) -> np.ndarray:
+        members = self.params["members"]
+        weights = self.params["weights"]
+        return np.sum([w * m.predict(df) for m, w in zip(members, weights)], axis=0)
+
+
+ENSEMBLE_MEMBERS = ["HAR", "HARQ", "SHAR", "ridge", "gbm"]
+
+
+def fit_ensemble(train, features, h: int, params: dict | None = None,
+                 members: list[str] | None = None, weights: str = "equal") -> Fitted:
+    """Combine the ladder's arms into one forecast.
+
+    Equal-weight combination is one of the most reliably replicated results in forecasting
+    — the "forecast combination puzzle" is that it is so hard to beat with fitted weights.
+    The reason applies squarely here: these models err in different *kinds*. HAR is linear
+    and stable but cannot represent an interaction; the GBM is flexible but fits noise;
+    HARQ leans on the measurement-error correction; SHAR on the leverage effect. Averaging
+    cancels a large part of the idiosyncratic error while keeping the shared signal.
+
+    `weights="nnls"` fits non-negative least-squares weights on an inner holdout — the last
+    year of the training rows, held out of the members' own fits — instead of averaging.
+    Non-negative and sum-to-one because unconstrained regression on correlated forecasts
+    produces enormous offsetting weights that do not survive out of sample.
+    """
+    names = members or ENSEMBLE_MEMBERS
+    ladder = dict(LADDER)
+
+    def _fit_members(rows):
+        out = []
+        for n in names:
+            fn = ladder[n]
+            out.append(fn(rows, features, h, params) if n in ("gbm", "mlp")
+                       else fn(rows, features, h))
+        return out
+
+    fitted = _fit_members(train)
+    w = np.full(len(fitted), 1.0 / len(fitted))
+
+    if weights == "nnls":
+        cut = train["date"].max() - pd.DateOffset(years=1)
+        inner = train[train["date"] < cut]
+        hold = train[train["date"] >= cut]
+        if len(inner) > 300 and len(hold) > 60:
+            from scipy.optimize import nnls
+            P = np.column_stack([m.predict(hold) for m in _fit_members(inner)])
+            y = hold[config.fwd_col(h)].to_numpy(float)
+            sol, _ = nnls(P, y)
+            if sol.sum() > 0:
+                w = sol / sol.sum()
+
+    return FittedEnsemble(name=f"ensemble-{weights}", columns=list(features),
+                          params={"members": fitted, "weights": w,
+                                  "member_names": names})
+
+
 # The ladder, in reporting order.
 LADDER = [
     ("persistence", fit_persistence),
@@ -241,4 +368,21 @@ LADDER = [
     ("SHAR", fit_shar),
     ("ridge", fit_ridge),
     ("gbm", fit_gbm),
+    ("mlp", fit_mlp),
+    ("ensemble", fit_ensemble),
 ]
+
+# The rungs whose capacity is tuned; everything else ignores the `params` argument.
+TUNED = {"gbm", "mlp", "ensemble"}
+
+
+def fit_by_name(name: str, train, features: list[str], h: int,
+                params: dict | None = None) -> Fitted:
+    """Fit one rung of the ladder by name.
+
+    Exists so no caller has to remember which estimators take tuned parameters — that list
+    grew, and each caller having its own `if name == "gbm"` was one rung away from silently
+    fitting an untuned model.
+    """
+    fn = dict(LADDER)[name]
+    return fn(train, features, h, params) if name in TUNED else fn(train, features, h)

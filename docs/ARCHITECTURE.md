@@ -8,26 +8,30 @@ volradar/
   cli.py                 one entrypoint for every stage
   data/
     fetch.py             download + cache raw series, with a coverage guard
+                         (prices from Yahoo; the vol complex from Cboe, Yahoo as fallback)
     realized.py          Oxford-Man Realized Library (intraday measures, one cached file)
   features/
-    core.py              per-series volatility features, jump block, forward targets
-    factors.py           the four candidate external factor families
+    core.py              per-series vol features: HAR, range (PK/GK/RS/YZ), jump, semivar
+    factors.py           the candidate external factor families
     assemble.py          market, sector and pooled panels; train-vs-eval frame split
   models/
-    dataset.py           splitting, embargo, regime thresholds  ← the honesty layer
-    estimators.py        the model ladder: persistence → HAR → ridge → gbm
+    dataset.py           splitting, embargo, fold edges, regime thresholds  ← honesty layer
+    estimators.py        the ladder: persistence → HAR → HARQ → SHAR → ridge → gbm →
+                         mlp → ensemble
     conformal.py         calibrated prediction intervals, adaptively corrected
     train.py             production fit + the snapshot the dashboard reads
   backtest/
-    metrics.py           every metric, defined once (incl. QLIKE)
+    metrics.py           every metric, defined once — QLIKE, the paired adoption test,
+                         and the Model Confidence Set
     evaluate.py          fixed split, pooled OOS, walk-forward, per-sector
     oos.py               walk-forward out-of-sample prediction series + intervals
     select_features.py   which factor families ship (decided pre-test)
-    ablation.py          what each family is worth
+    ablation.py          per-family walk-forward R2 -- descriptive only
     methods.py           methodology bake-off, paired against the incumbent
     settle.py            decides open model questions on pre-test folds
     intraday_study.py    is intraday data worth paying for? (scoped, 2000-2016)
     events.py            did it flag real volatility spikes?
+    alarm.py             can a dedicated stress head beat thresholding the mean forecast?
     decision.py          would acting on it have helped?
   simulate/
     dgp.py               synthetic markets with a KNOWN true volatility
@@ -82,6 +86,15 @@ Hyperparameters are tuned on a validation slice inside the training period. Fact
 are chosen on walk-forward folds strictly before `TEST_START`. Both are chronologically
 prior to anything reported.
 
+**5. One adoption bar, implemented once.**
+Every "should we change this?" question in the project — a feature family, a method, a
+model, an alarm rule — is answered the same way: score the candidate and the incumbent on
+identical pre-`TEST_START` folds, take the paired fold-by-fold difference, and adopt only at
+`t > 2` at both an annual and a semi-annual fold slicing. That test lives in
+`metrics.paired_test` and nowhere else. It used to live in three places with a fourth,
+different rule in `select_features.py`, which meant the answer depended on which file asked
+the question.
+
 ## Why two panels
 
 The market panel is one row per day (SPY); the sector panel is one row per day per sector
@@ -102,11 +115,19 @@ on pure noise — a property of the metric that is invisible on real data.
 ## Extending it
 
 - **A new factor family**: add a builder in `features/factors.py`, register it in
-  `feature_families()`, and add it to the shortlist in `select_features.py`. The ablation
-  and selection will tell you whether it earns a place; do not add it to
+  `feature_families()`, and add it to the shortlist in `select_features.py`. **The selection
+  study decides**, not the ablation: `ablation.py` averages per-year R², whose denominator is
+  each year's own variance, and its fold-to-fold spread (~0.35) dwarfs every difference it
+  reports (<0.06). Read it for direction, never for a verdict. Do not add anything to
   `SELECTED_FAMILIES` by hand.
 - **A new model**: add a `fit_*` function in `models/estimators.py` and append it to
-  `LADDER`. Every backtest picks it up automatically.
+  `LADDER`. Every backtest picks it up automatically. If it takes tuned parameters, add its
+  name to `TUNED` so `fit_by_name` passes them.
+- **A new family that starts later than the others**: give it its own entry rather than
+  folding it into a neighbour. Every column is required by `dataset.labelled`, so a series
+  beginning in 2011 deletes all training rows before 2011 — including 2008. That cost has to
+  be priced separately from the family's information content, which is why the VIX complex
+  is split into `vix` and `vix_short`.
 - **A new asset class**: add its tickers to `config.py` and build a third panel. The
   feature and evaluation layers are asset-agnostic.
 
