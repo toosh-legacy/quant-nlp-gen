@@ -1,5 +1,5 @@
 # Data, model artifacts and generated reports are all reproducible from the pipeline.
-data/
+/data/
 
 # Personal notes from the earlier research phase; superseded by docs/METRICS.md.
 LEARNING_GUIDE.md
