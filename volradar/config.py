@@ -202,6 +202,27 @@ REGIME_NAMES = ["calm", "normal", "stressed"]
 EPS = 1e-8
 TRADING_DAYS = 252
 
+# ---------------------------------------------------------------------------
+# News semantics layer (volradar/news/, volradar/sentiment/)
+# ---------------------------------------------------------------------------
+# A live, descriptive overlay — NOT a forecast input. Free news feeds carry days of
+# history, not years, so the signal cannot be walk-forward validated yet. Instead every
+# run appends to a timestamped archive (NEWS_DIR), so an honest test becomes possible once
+# enough history has accrued; `volradar.news.validate` states how far off that is.
+NEWS_DIR = DATA_DIR / "news"
+NEWS_MIN_DAYS_FOR_TEST = 120         # archived trading days before a validation is attempted
+
+SENTIMENT_MODEL_DIR = DATA_DIR / "sentiment_model"
+BASE_SENTIMENT_MODEL = "distilbert-base-uncased"
+SENTIMENT_DATASET = "zeroshot/twitter-financial-news-sentiment"
+LABEL_NAMES = {0: "Bearish", 1: "Bullish", 2: "Neutral"}
+NAME_TO_LABEL = {v: k for k, v in LABEL_NAMES.items()}
+NUM_LABELS = len(LABEL_NAMES)
+SENT_EPOCHS = 3
+SENT_BATCH_SIZE = 16
+SENT_LEARNING_RATE = 2e-5
+SENT_MAX_LENGTH = 128
+
 
 def fwd_col(h: int) -> str:
     """Regression target: log realized volatility over the NEXT h trading days."""

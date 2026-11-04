@@ -6,18 +6,16 @@ README.md — the intermediate `checkpoints/` and `training_args.bin` are skippe
 
 Run:
     hf auth login                                  # once, interactive
-    python sentiment_model/publish_to_hf.py        # push to the default repo id
-    python sentiment_model/publish_to_hf.py --repo-id you/my-model --private
+    python -m volradar.sentiment.publish_to_hf        # push to the default repo id
+    python -m volradar.sentiment.publish_to_hf --repo-id you/my-model --private
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import config  # noqa: E402
+from volradar import config
 
 DEFAULT_REPO_ID = "tooshlegacy/distilbert-financial-tweet-sentiment"
 MODEL_CARD = Path(__file__).resolve().parent / "model_card.md"

@@ -13,22 +13,19 @@ of BERT's quality at ~60% of the size, so it actually fine-tunes on a laptop CPU
 reasonable time — the whole point of this project's CPU-only constraint.
 
 Run:
-    python sentiment_model/train_sentiment_model.py            # full run (2-3 epochs)
-    python sentiment_model/train_sentiment_model.py --epochs 1 # faster fallback
-    python sentiment_model/train_sentiment_model.py --smoke    # tiny subset, wiring test
+    python -m volradar.sentiment.train_sentiment_model            # full run (2-3 epochs)
+    python -m volradar.sentiment.train_sentiment_model --epochs 1 # faster fallback
+    python -m volradar.sentiment.train_sentiment_model --smoke    # tiny subset, wiring test
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 import numpy as np
 
-# Make `import config` work regardless of where the script is launched from.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import config  # noqa: E402
+from volradar import config
 
 
 def compute_metrics(eval_pred):
