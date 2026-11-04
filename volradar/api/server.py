@@ -67,12 +67,21 @@ def _records(df: pd.DataFrame) -> list[dict]:
     return _clean(df.replace({np.nan: None}).to_dict(orient="records"))
 
 
-@lru_cache(maxsize=1)
-def _snapshot() -> dict:
-    path = config.REPORT_DIR / "snapshot.json"
+@lru_cache(maxsize=8)
+def _read_json(path_str: str, mtime: float) -> dict:
+    # Keyed on mtime, so a `train` or `news` run is picked up without restarting the server.
+    return json.loads(open(path_str, encoding="utf-8").read())
+
+
+def _json_report(name: str, hint: str) -> dict:
+    path = config.REPORT_DIR / name
     if not path.exists():
-        raise HTTPException(503, "snapshot.json missing — run `python -m volradar.cli train`.")
-    return json.loads(path.read_text(encoding="utf-8"))
+        raise HTTPException(503, f"{name} missing — run `python -m volradar.cli {hint}`.")
+    return _read_json(str(path), path.stat().st_mtime)
+
+
+def _snapshot() -> dict:
+    return _json_report("snapshot.json", "train")
 
 
 @app.get("/api/health")
@@ -85,7 +94,10 @@ def health():
         config.REPORT_DIR / "decision.csv",
         config.REPORT_DIR / "ablation.csv",
     ]}
-    return {"status": "ok" if all(have.values()) else "incomplete", "artifacts": have}
+    # The news overlay is optional: its absence never marks the forecast as incomplete.
+    optional = {"news_radar.json": (config.REPORT_DIR / "news_radar.json").exists()}
+    return {"status": "ok" if all(have.values()) else "incomplete", "artifacts": have,
+            "optional": optional}
 
 
 @app.get("/api/forecast")
@@ -199,6 +211,15 @@ def performance():
     except HTTPException:
         out["stability"] = out["folds"] = None
     return out
+
+
+@app.get("/api/news")
+def news():
+    """The news-channel overlay: tone, shock language and themes per sector.
+
+    Descriptive only and labelled as such in the payload (`validated_as_predictor: false`).
+    """
+    return _json_report("news_radar.json", "news")
 
 
 @app.get("/api/equity")

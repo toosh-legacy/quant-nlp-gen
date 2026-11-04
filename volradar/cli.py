@@ -15,7 +15,9 @@
     python -m volradar.cli intraday   # is intraday data worth paying for? (Oxford-Man)
     python -m volradar.cli benchmark  # vs the literature, on the literature's own data
     python -m volradar.cli train      # fit production models, write the snapshot
+    python -m volradar.cli news       # score news-channel headlines onto the radar (network)
     python -m volradar.cli all        # every stage above, in order
+    python -m volradar.cli refresh    # daily: latest prices -> retrain -> news, no backtest
     python -m volradar.cli serve      # run the API + dashboard
 
 Each stage is idempotent and caches its output, so re-running `all` after a code change
@@ -107,6 +109,25 @@ def cmd_train(args):
     run()
 
 
+def cmd_news(args):
+    from volradar.news.radar import main as run
+    run(force_lexicon=args.lexicon)
+
+
+def cmd_refresh(args):
+    """Bring the dashboard to the latest close without re-running the backtest.
+
+    Prices are re-downloaded and the panels rebuilt (split boundaries are absolute dates,
+    so extending the sample cannot change a reported metric), the production models are
+    refit, and the news radar is rebuilt against the new forecast.
+    """
+    args.force = True
+    _stage("fetch", cmd_fetch, args)
+    _stage("build panels", cmd_build, args)
+    _stage("train production models", cmd_train, args)
+    _stage("news radar", cmd_news, args)
+
+
 def cmd_oos(args):
     from volradar.backtest.oos import load_or_build
     for panel in ("market", "sector"):
@@ -146,6 +167,10 @@ def cmd_all(args):
     _stage("intraday value study", cmd_intraday, args)
     _stage("external benchmark", cmd_benchmark, args)
     _stage("train production models", cmd_train, args)
+    try:
+        _stage("news radar", cmd_news, args)
+    except Exception as exc:        # an overlay outage must never fail the pipeline
+        print(f"  [warn] news radar skipped: {exc}")
     print(f"\nAll artifacts in {config.REPORT_DIR}")
 
 
@@ -165,7 +190,8 @@ COMMANDS = {
     "events": cmd_events, "alarm": cmd_alarm, "decision": cmd_decision,
     "simulate": cmd_simulate, "settle": cmd_settle, "intraday": cmd_intraday,
     "benchmark": cmd_benchmark,
-    "train": cmd_train, "all": cmd_all, "serve": cmd_serve,
+    "train": cmd_train, "news": cmd_news, "all": cmd_all, "refresh": cmd_refresh,
+    "serve": cmd_serve,
 }
 
 
@@ -181,6 +207,8 @@ def main(argv=None) -> int:
     p.add_argument("--market-only", action="store_true",
                    help="ablation: skip the sector panel (by far the most expensive stage, "
                         "and superseded for decisions by `select`)")
+    p.add_argument("--lexicon", action="store_true",
+                   help="news: score tone with the word-list fallback instead of DistilBERT")
     args = p.parse_args(argv)
 
     config.ensure_dirs()
