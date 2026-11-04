@@ -26,3 +26,4 @@ uvicorn[standard]==0.51.0
 
 # --- dev ---
 pytest==9.1.1
+playwright==1.64.1          # scripts/ui_check.py — end-to-end dashboard check (optional)
