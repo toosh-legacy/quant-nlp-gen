@@ -326,6 +326,22 @@ To refresh the dashboard to the latest close without re-running the backtest:
 python -m volradar.cli refresh     # fetch + build + train + news, ~1 minute
 ```
 
+### Hosting
+
+The public dashboard is a static site on GitHub Pages. The API computes nothing, so
+`scripts/export_static.py` writes every response to JSON and a `VITE_STATIC=1` build reads
+those files instead of `/api`. The `Daily refresh` workflow (23:15 UTC, weekdays) restores
+reports and the news archive from the `state` branch, runs `refresh` and the tests, exports,
+builds, deploys Pages and saves the new state. To preview the static build locally:
+
+```bash
+python scripts/export_static.py
+cd frontend && VITE_STATIC=1 npm run build    # then serve frontend/dist with any static server
+```
+
+`deploy/space/` and `scripts/deploy_space.py` keep the alternative: the live FastAPI server
+in a Docker image (a Hugging Face Docker Space needs a PRO account).
+
 ### Tests
 
 ```bash

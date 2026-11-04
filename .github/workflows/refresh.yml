@@ -1,22 +1,34 @@
 name: Daily refresh
 
-# Brings the public dashboard to the latest US close every weekday:
-#   pull last published state from the Space -> cli refresh -> tests -> push back.
+# Brings the public dashboard to the latest US close every weekday and publishes it to
+# GitHub Pages as a static site:
+#   restore state -> cli refresh -> tests -> export API as JSON -> build -> deploy Pages
 #
-# The Space is the artifact store. Reports and the news archive are gitignored here, so a
-# fresh runner restores them from the Space first; the expensive walk-forward backtest is
-# never rerun (split boundaries are absolute dates, so new data cannot move its numbers).
+# The API computes nothing, so the whole dashboard is a pure function of data/reports/ and
+# needs no server: scripts/export_static.py writes every API response to a JSON file and the
+# frontend (built with VITE_STATIC=1) reads those instead of /api.
 #
-# Setup (once, in the GitHub repo settings, under the "quant-nlp-gen" environment):
-#   Secrets   HF_TOKEN              Hugging Face token with write access to the Space
-#   Variables HF_SPACE              e.g. your-name/volatility-radar
-#             SENTIMENT_MODEL_REPO  optional, e.g. your-name/distilbert-financial-tweet-sentiment
-#                                   (without it, news tone uses the lexicon fallback)
+# State: reports and the news archive are gitignored on main. They live on the `state`
+# branch, kept as one force-pushed commit so its history never grows. A fresh runner
+# restores them from there; the expensive walk-forward backtest is never rerun (split
+# boundaries are absolute dates, so new data cannot move its numbers).
+#
+# Setup (once):
+#   Settings -> Pages -> Source: GitHub Actions
+#   Environment "quant-nlp-gen", optional:
+#     Variable SENTIMENT_MODEL_REPO  e.g. your-name/volradar-sentiment (DistilBERT tone model;
+#                                    without it, news tone uses the lexicon fallback)
+#     Secret   HF_TOKEN              only needed if that model repo is private
 
 on:
   schedule:
     - cron: "15 23 * * 1-5"      # 23:15 UTC, after the US close and Yahoo's end-of-day prints
   workflow_dispatch:
+
+permissions:
+  contents: write                # push the state branch
+  pages: write
+  id-token: write
 
 concurrency:
   group: refresh
@@ -25,21 +37,25 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    environment: quant-nlp-gen     # HF_TOKEN / HF_SPACE / SENTIMENT_MODEL_REPO live here
+    environment: quant-nlp-gen
     timeout-minutes: 60
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      HF_SPACE: ${{ vars.HF_SPACE }}
       SENTIMENT_MODEL_REPO: ${{ vars.SENTIMENT_MODEL_REPO }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check configuration
+      - name: Check out the state branch
+        uses: actions/checkout@v4
+        with:
+          ref: state
+          path: _state
+
+      - name: Restore reports and news archive
         run: |
-          if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE" ]; then
-            echo "::error::Set the HF_TOKEN secret and the HF_SPACE variable (see the header of this file)."
-            exit 1
-          fi
+          mkdir -p data
+          cp -r _state/reports data/reports
+          cp -r _state/news data/news
 
       - uses: actions/setup-python@v5
         with:
@@ -57,16 +73,54 @@ jobs:
           pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
           pip install transformers==5.13.1
 
-      - name: Restore published reports and news archive
-        run: python scripts/deploy_space.py pull
-
       - name: Refresh prices, refit, rebuild the news radar
         run: python -m volradar.cli refresh
 
       # The API contract tests read the fresh artifacts, so a broken snapshot fails here
-      # instead of going live.
+      # instead of going live (and the state branch keeps yesterday's good copy).
       - name: Test against the new artifacts
         run: pytest -q -p no:randomly
 
-      - name: Publish to the Space
-        run: python scripts/deploy_space.py push
+      - name: Export the API as static JSON
+        run: python scripts/export_static.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build the static dashboard
+        working-directory: frontend
+        env:
+          VITE_STATIC: "1"
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist
+
+      - name: Save state
+        working-directory: _state
+        run: |
+          rm -rf reports news
+          cp -r ../data/reports reports
+          cp -r ../data/news news
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan next
+          git add -A
+          git commit -q -m "state: $(date -u +%F)"
+          git push --force origin next:state
+
+  deploy:
+    needs: refresh
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - id: pages
+        uses: actions/deploy-pages@v4

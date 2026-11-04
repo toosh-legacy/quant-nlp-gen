@@ -1,5 +1,9 @@
 """Deploy the dashboard to a Hugging Face Space, or pull its state back down.
 
+Alternative to the default hosting (static GitHub Pages, see .github/workflows/refresh.yml):
+this ships the live FastAPI server as a Docker Space, which requires a Hugging Face PRO
+account. The daily workflow no longer calls it.
+
 The Space repo doubles as the artifact store. Reports (data/reports/) and the news archive
 (data/news/) are gitignored in this repo, so the daily GitHub Actions job starts from an
 empty checkout: it pulls the last published state from the Space, runs `cli refresh`, and
