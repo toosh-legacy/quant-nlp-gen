@@ -10,5 +10,11 @@ export default defineConfig({
     port: 5173,
     proxy: { "/api": { target: "http://127.0.0.1:8000", changeOrigin: true } },
   },
-  build: { outDir: "dist", emptyOutDir: true },
+  build: {
+    outDir: "dist",
+    emptyOutDir: true,
+    // Recharts is most of the bundle and changes far less often than the app code.
+    rollupOptions: { output: { manualChunks: { charts: ["recharts"] } } },
+    chunkSizeWarningLimit: 600,
+  },
 });

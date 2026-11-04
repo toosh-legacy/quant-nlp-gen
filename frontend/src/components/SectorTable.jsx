@@ -1,6 +1,7 @@
 import React from "react";
 import { Card, Chip } from "./ui";
 import { pct, pct01, signed } from "../format";
+import { PressureBar } from "./NewsPanel";
 
 const barColor = (regime) =>
   regime === "calm" ? "var(--calm)" : regime === "stressed" ? "var(--stressed)" : "var(--normal)";
@@ -13,8 +14,10 @@ const barColor = (regime) =>
  * its own measured accuracy: the model does not forecast all sectors equally well, and a
  * ranking presented without that invites the reader to trust each row equally.
  */
-export function SectorTable({ sectors, horizon, selected, onSelect }) {
+export function SectorTable({ sectors, horizon, selected, onSelect, news, foldCount }) {
   const rows = sectors.ranking;
+  const newsBy = Object.fromEntries((news?.sectors || []).map((s) => [s.ticker, s]));
+  const hasNews = Boolean(news?.available);
   const max = Math.max(...rows.map((r) => r.forecast_vol_ann));
 
   return (
@@ -32,6 +35,7 @@ export function SectorTable({ sectors, horizon, selected, onSelect }) {
               <th className="num">Now</th>
               <th className="num">Change</th>
               <th>Outlook</th>
+              {hasNews && <th title="News-channel pressure, 0-100 — descriptive overlay, not a model input">News</th>}
               <th className="num" title="Out-of-sample rise/fall accuracy for this sector, across every walk-forward year">
                 Hit rate
               </th>
@@ -68,6 +72,9 @@ export function SectorTable({ sectors, horizon, selected, onSelect }) {
                 <td>
                   <Chip regime={s.regime} />
                 </td>
+                {hasNews && (
+                  <td><PressureBar value={newsBy[s.ticker]?.pressure ?? null} /></td>
+                )}
                 <td className="num muted">
                   {s.track_record ? pct01(s.track_record.dir_accuracy) : "—"}
                 </td>
@@ -78,8 +85,9 @@ export function SectorTable({ sectors, horizon, selected, onSelect }) {
       </div>
       <p className="sub" style={{ margin: "14px 0 0" }}>
         Click a sector to load its out-of-sample forecast history below. "Hit rate" is how
-        often the model called that sector's volatility direction correctly across 13
-        walk-forward years — not a claim about today.
+        often the model called that sector's volatility direction correctly across{" "}
+        {foldCount ? `${foldCount} ` : "every "}walk-forward year{foldCount === 1 ? "" : "s"} — not a
+        claim about today.{hasNews && " \"News\" is the news-channel pressure reading: context, not a model input."}
       </p>
     </Card>
   );

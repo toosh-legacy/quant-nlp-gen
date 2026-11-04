@@ -1,29 +1,46 @@
 import React, { useEffect, useState } from "react";
-import { getEquity, getForecast, getHistory, getPerformance, getSectors } from "./api";
+import { getEquity, getForecast, getHistory, getNews, getPerformance, getSectors } from "./api";
 import { MarketCard, DriversCard } from "./components/MarketCard";
 import { SectorTable } from "./components/SectorTable";
 import { HistoryChart, EquityChart } from "./components/Charts";
 import { TrackRecord } from "./components/TrackRecord";
-import { State } from "./components/ui";
+import { RadarSweep, RadarLegend } from "./components/RadarSweep";
+import { NewsPulse, NewsRadar } from "./components/NewsPanel";
+import { Card, Chip, Logo, State } from "./components/ui";
 import { folds } from "./format";
+import { pressureColor } from "./theme";
 
 const TABS = [
-  ["dashboard", "Dashboard"],
+  ["dashboard", "Overview"],
+  ["news", "News radar"],
   ["record", "Track record"],
   ["method", "Method"],
 ];
 
+// The tab lives in the URL hash so a link can open straight onto it.
+const tabFromHash = () => {
+  const h = window.location.hash.replace("#", "");
+  return TABS.some(([id]) => id === h) ? h : "dashboard";
+};
+
 export default function App() {
-  const [tab, setTab] = useState("dashboard");
+  const [tab, setTabState] = useState(tabFromHash);
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [sectorTicker, setSectorTicker] = useState(null);
   const [sectorHistory, setSectorHistory] = useState(null);
 
+  const setTab = (t) => {
+    setTabState(t);
+    window.history.replaceState(null, "", `#${t}`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   useEffect(() => {
-    Promise.all([getForecast(), getSectors(), getPerformance(), getHistory("market"), getEquity()])
-      .then(([forecast, sectors, perf, history, equity]) =>
-        setData({ forecast, sectors, perf, history, equity })
+    // getNews resolves to null when the overlay is absent, so it can never block the page.
+    Promise.all([getForecast(), getSectors(), getPerformance(), getHistory("market"), getEquity(), getNews()])
+      .then(([forecast, sectors, perf, history, equity, news]) =>
+        setData({ forecast, sectors, perf, history, equity, news })
       )
       .catch((e) => setErr(e.message));
   }, []);
@@ -43,28 +60,47 @@ export default function App() {
         </p>
       </State>
     );
-  if (!data) return <State>Loading forecasts…</State>;
+  if (!data) return <State loading>Loading forecasts…</State>;
 
-  const { forecast, sectors, perf, history, equity } = data;
+  const { forecast, sectors, perf, history, equity, news } = data;
   const horizon = forecast.meta?.horizon ?? 10;
   const selected = sectors.ranking.find((s) => s.ticker === sectorTicker);
+  const foldCount = folds(perf, "sector", horizon)?.n;
+  const hasNews = Boolean(news?.available);
+
+  const pickSector = (t) => {
+    setSectorTicker(t);
+    if (t && tab !== "dashboard") setTab("dashboard");
+  };
 
   return (
     <>
       <header className="top">
         <div className="top-inner">
           <div className="brand">
-            <h1>Volatility Radar</h1>
-            <p>
-              Where market and sector volatility are heading over the next {horizon} trading
-              days — and how often that call has been right.
-            </p>
+            <Logo />
+            <div>
+              <h1>Volatility <span>Radar</span></h1>
+              <p>Market &amp; sector volatility, {horizon} trading days ahead — with its own track record.</p>
+            </div>
+          </div>
+          <div className="status-strip">
+            <span className="pill"><span className="live" />as of <strong>{forecast.as_of}</strong></span>
+            <span className="pill">SPY <strong>{forecast.forecast_vol_ann.toFixed(1)}%</strong> <Chip regime={forecast.regime} /></span>
+            {hasNews && (
+              <span className="pill">news pressure{" "}
+                <strong style={{ color: pressureColor(news.market.pressure) }}>
+                  {news.market.pressure.toFixed(0)}
+                </strong>
+              </span>
+            )}
           </div>
         </div>
         <nav className="tabs">
           {TABS.map(([id, label]) => (
             <button key={id} className={`tab ${tab === id ? "on" : ""}`} onClick={() => setTab(id)}>
               {label}
+              {id === "news" && hasNews && <span className="count">{news.n_headlines}</span>}
             </button>
           ))}
         </nav>
@@ -73,9 +109,20 @@ export default function App() {
       <div className="wrap">
         {tab === "dashboard" && (
           <>
-            <div className="grid two">
+            <div className="grid hero">
               <MarketCard f={forecast} horizon={horizon} />
+              <Card
+                title="Sector volatility radar"
+                sub={`Forecast vol per sector · next ${horizon} days · hover a blip, click to drill in`}
+              >
+                <RadarSweep sectors={sectors} news={news} selected={sectorTicker} onSelect={pickSector} />
+                <RadarLegend hasNews={hasNews} />
+              </Card>
+            </div>
+
+            <div className="grid two" style={{ marginTop: 18 }}>
               <DriversCard drivers={forecast.drivers} />
+              <NewsPulse news={news} onOpen={() => setTab("news")} />
             </div>
 
             <h3 className="section-title">Which sectors are stable?</h3>
@@ -89,6 +136,8 @@ export default function App() {
               horizon={horizon}
               selected={sectorTicker}
               onSelect={setSectorTicker}
+              news={news}
+              foldCount={foldCount}
             />
 
             <h3 className="section-title">Forecast against what actually happened</h3>
@@ -101,12 +150,14 @@ export default function App() {
               title={sectorHistory && selected ? `${selected.sector} — forecast vs realized` : "Market — forecast vs realized"}
               sub={
                 sectorHistory && selected
-                  ? `${selected.ticker} · click the row again to return to the market view`
+                  ? `${selected.ticker} · click the row or blip again to return to the market view`
                   : "SPY · select a sector above to drill in"
               }
             />
           </>
         )}
+
+        {tab === "news" && <NewsRadar news={news} onSelectSector={pickSector} />}
 
         {tab === "record" && <TrackRecord perf={perf} />}
 
@@ -120,8 +171,10 @@ export default function App() {
 
         <footer>
           Educational research project — <strong>not investment advice</strong>. Forecasts are
-          of volatility (how much prices move), never of direction (which way). Data from
-          Yahoo Finance. Model last fitted {forecast.meta?.fitted_utc?.slice(0, 10)}.
+          of volatility (how much prices move), never of direction (which way). Prices from
+          Yahoo Finance and Cboe; headlines from public RSS feeds. Model last fitted{" "}
+          {forecast.meta?.fitted_utc?.slice(0, 10)}
+          {hasNews && <> · news read {news.generated_utc.slice(0, 16).replace("T", " ")} UTC</>}.
         </footer>
       </div>
     </>
@@ -194,14 +247,45 @@ function Method({ perf, forecast }) {
             structure, vol-of-vol, variance risk premium); cross-sectional dispersion and
             average correlation across ~80 large caps; rates, credit spreads and the dollar;
             sector dispersion. Each is a plausible volatility predictor. None of them
-            reliably improved the forecast — every combination landed within one standard
-            error of price history alone across the selection folds, so the simplest model
-            was kept. They remain implemented and are re-tested on every run.
+            reliably improved the forecast under the project's single adoption rule, so the
+            simplest model was kept. They remain implemented and are re-tested on every run.
           </p>
           <p style={{ fontSize: 14 }} className="muted">
             That is a real result, not a shortcut. Realized volatility is a remarkably
             complete summary of a market's own risk state, and the things that look like
             independent signals mostly turn out to be reflections of it.
+          </p>
+        </div>
+      </div>
+
+      <div className="grid two" style={{ marginTop: 16 }}>
+        <div className="card">
+          <h2>News semantics overlay</h2>
+          <p className="sub">What the news channels say — kept beside the forecast, not inside it.</p>
+          <p style={{ fontSize: 14 }}>
+            Headlines from CNBC, MarketWatch, the FT, BBC, Nasdaq, Seeking Alpha, Investing.com,
+            the Federal Reserve, Google News and per-sector Yahoo Finance feeds are pulled on every
+            refresh, de-duplicated across channels, scored Bearish / Bullish / Neutral by a
+            DistilBERT model fine-tuned on financial news text (88% accuracy, 0.85 macro-F1 on its
+            validation split), and tagged with the sectors, risk themes and shock language they
+            contain.
+          </p>
+          <p style={{ fontSize: 14 }} className="muted">
+            It is <strong>not</strong> a model input. Free feeds carry days of history, not years,
+            so there is no honest way yet to show it improves a walk-forward forecast — and
+            back-filling history from today's articles would leak the future. Every headline is
+            archived with its first-seen timestamp instead, so the test can be run under the same
+            paired rule as every other candidate feature once the archive is long enough.
+          </p>
+        </div>
+        <div className="card">
+          <h2>Refreshing</h2>
+          <p className="sub">One command brings everything to the latest close.</p>
+          <p style={{ fontSize: 14 }}>
+            <code className="mono">python -m volradar.cli refresh</code> re-downloads prices,
+            rebuilds the feature panels, refits the production models and rebuilds the news
+            radar. The backtest is not re-run: split boundaries are absolute dates, so extending
+            the sample cannot change any reported track-record number.
           </p>
         </div>
       </div>

@@ -4,17 +4,9 @@ import {
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { Card } from "./ui";
+import { AXIS, C, tooltipStyle } from "../theme";
 
-const AXIS = { stroke: "#5d6b83", fontSize: 11 };
-const GRID = "#263042";
-
-const tooltipStyle = {
-  contentStyle: {
-    background: "#1b2130", border: "1px solid #263042",
-    borderRadius: 8, fontSize: 12.5,
-  },
-  labelStyle: { color: "#8b98ae", marginBottom: 4 },
-};
+const GRID = C.line;
 
 /**
  * Forecast against what actually happened, on out-of-sample data only.
@@ -35,7 +27,7 @@ export function HistoryChart({ history, title, sub }) {
 
   return (
     <Card title={title} sub={sub}>
-      <ResponsiveContainer width="100%" height={300}>
+      <ResponsiveContainer width="100%" height={320}>
         <ComposedChart data={data} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
           <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
           <XAxis dataKey="date" tick={AXIS} tickLine={false} axisLine={{ stroke: GRID }}
@@ -48,12 +40,12 @@ export function HistoryChart({ history, title, sub }) {
                      : `${Number(v).toFixed(1)}%`} />
           <Legend wrapperStyle={{ fontSize: 12.5, paddingTop: 8 }} iconType="plainline" />
           {hasBand && (
-            <Area type="monotone" dataKey="Range" stroke="none" fill="#5aa9ff"
+            <Area type="monotone" dataKey="Range" stroke="none" fill={C.accent}
                   fillOpacity={0.15} name="80% range" />
           )}
-          <Line type="monotone" dataKey="Realized" stroke="#8b98ae" dot={false}
+          <Line type="monotone" dataKey="Realized" stroke={C.muted} dot={false}
                 strokeWidth={1.4} />
-          <Line type="monotone" dataKey="Forecast" stroke="#5aa9ff" dot={false}
+          <Line type="monotone" dataKey="Forecast" stroke={C.accent} dot={false}
                 strokeWidth={1.8} />
         </ComposedChart>
       </ResponsiveContainer>
@@ -81,12 +73,12 @@ export function EquityChart({ equity }) {
       title="Would acting on it have helped?"
       sub="Growth of $1 · volatility targeting at 15% annualized · 1bp cost per trade · out-of-sample"
     >
-      <ResponsiveContainer width="100%" height={300}>
+      <ResponsiveContainer width="100%" height={320}>
         <AreaChart data={data} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
           <defs>
             <linearGradient id="gModel" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#5aa9ff" stopOpacity={0.32} />
-              <stop offset="100%" stopColor="#5aa9ff" stopOpacity={0} />
+              <stop offset="0%" stopColor={C.accent} stopOpacity={0.32} />
+              <stop offset="100%" stopColor={C.accent} stopOpacity={0} />
             </linearGradient>
           </defs>
           <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
@@ -96,11 +88,11 @@ export function EquityChart({ equity }) {
                  tickFormatter={(v) => `$${Number(v).toFixed(0)}`} />
           <Tooltip {...tooltipStyle} formatter={(v) => `$${Number(v).toFixed(2)}`} />
           <Legend wrapperStyle={{ fontSize: 12.5, paddingTop: 8 }} iconType="plainline" />
-          <Area type="monotone" dataKey="Buy & hold" stroke="#5d6b83" fill="none"
+          <Area type="monotone" dataKey="Buy & hold" stroke={C.dim} fill="none"
                 strokeWidth={1.3} />
-          <Area type="monotone" dataKey="Sized on current vol" stroke="#d9a441" fill="none"
+          <Area type="monotone" dataKey="Sized on current vol" stroke={C.normal} fill="none"
                 strokeWidth={1.3} strokeDasharray="4 3" />
-          <Area type="monotone" dataKey="Sized on forecast" stroke="#5aa9ff"
+          <Area type="monotone" dataKey="Sized on forecast" stroke={C.accent}
                 fill="url(#gModel)" strokeWidth={1.9} />
         </AreaChart>
       </ResponsiveContainer>

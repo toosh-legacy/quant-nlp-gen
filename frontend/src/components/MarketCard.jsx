@@ -1,5 +1,6 @@
 import React from "react";
-import { Card, Chip, RegimeMeter } from "./ui";
+import { Card, Chip } from "./ui";
+import { Gauge } from "./Gauge";
 import { featureBlurb, featureLabel, pct, REGIME_COPY, signed } from "../format";
 
 /** The headline: where market volatility is forecast to go over the next h sessions. */
@@ -7,6 +8,7 @@ export function MarketCard({ f, horizon }) {
   const rising = f.direction === "rising";
   return (
     <Card
+      className="card feature"
       title="Market volatility forecast"
       sub={`S&P 500 (SPY) · next ${horizon} trading days · as of ${f.as_of}`}
     >
@@ -19,37 +21,32 @@ export function MarketCard({ f, horizon }) {
         <Chip regime={f.regime} />
       </div>
 
-      {f.forecast_lo_ann != null && (
-        <p className="from-line" style={{ marginTop: 10 }}>
-          Likely range{" "}
-          <strong className="mono">
-            {pct(f.forecast_lo_ann)} – {pct(f.forecast_hi_ann)}
-          </strong>
-          {f.measured_coverage != null && (
-            <span className="muted">
-              {" "}
-              · this band has contained the outcome{" "}
-              <strong>{(f.measured_coverage * 100).toFixed(0)}%</strong> of the time
-              out-of-sample
-            </span>
-          )}
-        </p>
-      )}
+      <Gauge bands={f.regime_bands_ann} current={f.current_vol_ann} forecast={f.forecast_vol_ann}
+             lo={f.forecast_lo_ann} hi={f.forecast_hi_ann} />
 
-      <p className="from-line">
-        Currently running at <strong className="mono">{pct(f.current_vol_ann)}</strong> (
-        {f.current_regime}) — the forecast is for volatility to{" "}
-        <strong>{rising ? "rise" : "fall"}</strong> over the next {horizon} sessions.
-      </p>
-      <p className="from-line" style={{ marginTop: 4 }}>
-        {REGIME_COPY[f.regime]}
-      </p>
+      <div className="stat-row">
+        <div className="stat">
+          <div className="k">Now</div>
+          <div className="v">{pct(f.current_vol_ann)}<small>{f.current_regime}</small></div>
+        </div>
+        <div className="stat">
+          <div className="k">80% range</div>
+          <div className="v" style={{ fontSize: 15 }}>
+            {f.forecast_lo_ann != null ? `${f.forecast_lo_ann.toFixed(1)}–${f.forecast_hi_ann.toFixed(1)}%` : "—"}
+          </div>
+        </div>
+        <div className="stat">
+          <div className="k">Band hit rate</div>
+          <div className="v">{f.measured_coverage != null ? `${(f.measured_coverage * 100).toFixed(0)}%` : "—"}
+            <small>out-of-sample</small></div>
+        </div>
+      </div>
 
-      <RegimeMeter
-        bands={f.regime_bands_ann}
-        current={f.current_vol_ann}
-        forecast={f.forecast_vol_ann}
-      />
+      <p className="from-line" style={{ marginTop: 14 }}>
+        Volatility is forecast to <strong>{rising ? "rise" : "fall"}</strong> over the next{" "}
+        {horizon} sessions. {REGIME_COPY[f.regime]} White needle is the forecast, the short
+        mark is today, the inner blue arc is the calibrated 80% range.
+      </p>
     </Card>
   );
 }

@@ -18,3 +18,5 @@ export const getPerformance = () => j("/api/performance");
 export const getEquity = () => j("/api/equity");
 export const getHistory = (panel = "market", ticker = null, limit = 1500) =>
   j(`/api/history?panel=${panel}&limit=${limit}${ticker ? `&ticker=${ticker}` : ""}`);
+// Optional overlay: resolves to null rather than failing the page when it is absent.
+export const getNews = () => j("/api/news").catch(() => null);
