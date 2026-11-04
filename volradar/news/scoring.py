@@ -9,6 +9,7 @@ scorer in use is always reported alongside the reading; the two are never mixed 
 
 from __future__ import annotations
 
+import os
 import re
 from functools import lru_cache
 
@@ -42,10 +43,33 @@ def _lexicon(titles: list[str]) -> list[tuple[str, float]]:
     return out
 
 
+def _ensure_model() -> bool:
+    """Make the fine-tuned weights available locally.
+
+    A fresh CI checkout has no data/sentiment_model (it is gitignored and 250 MB), so when
+    SENTIMENT_MODEL_REPO names a Hugging Face model repo the weights are downloaded once
+    into the usual directory. Without it, or if the download fails, the lexicon takes over.
+    """
+    model_dir = config.SENTIMENT_MODEL_DIR
+    if (model_dir / "model.safetensors").exists():
+        return True
+    repo = os.environ.get("SENTIMENT_MODEL_REPO")
+    if not repo:
+        return False
+    try:
+        from huggingface_hub import snapshot_download
+        snapshot_download(repo_id=repo, local_dir=str(model_dir),
+                          allow_patterns=["*.json", "*.safetensors", "*.txt"])
+    except Exception as exc:          # a missing/private repo must not break the run
+        print(f"  [warn] could not download {repo}: {type(exc).__name__}: {exc}")
+        return False
+    return (model_dir / "model.safetensors").exists()
+
+
 @lru_cache(maxsize=1)
 def _pipeline():
     model_dir = config.SENTIMENT_MODEL_DIR
-    if not (model_dir / "model.safetensors").exists():
+    if not _ensure_model():
         return None, "lexicon (no fine-tuned model at data/sentiment_model)"
     try:
         from transformers import pipeline

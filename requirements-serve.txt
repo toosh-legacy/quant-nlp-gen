@@ -1,0 +1,10 @@
+# What the web server needs and nothing more — used by the Hugging Face Space image.
+#
+# The API reads pre-built reports from data/reports/ and computes nothing, so serving needs
+# no XGBoost, scikit-learn, torch or yfinance. Those live in requirements.txt and run in the
+# daily refresh job (GitHub Actions), not in the web container.
+pandas==3.0.3
+numpy==2.4.6
+pyarrow==24.0.0
+fastapi==0.141.1
+uvicorn[standard]==0.51.0

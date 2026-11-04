@@ -27,6 +27,7 @@ only redoes what is downstream of it. Add `--force` to rebuild from scratch.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 
@@ -201,8 +202,10 @@ def main(argv=None) -> int:
     p.add_argument("command", choices=list(COMMANDS))
     p.add_argument("--force", action="store_true",
                    help="ignore caches and rebuild this stage from scratch")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8000)
+    # Hosting platforms (Hugging Face Spaces, Render, ...) inject HOST/PORT; locally the
+    # defaults keep the server on loopback.
+    p.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
+    p.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
     p.add_argument("--reload", action="store_true", help="auto-reload the API on edits")
     p.add_argument("--market-only", action="store_true",
                    help="ablation: skip the sector panel (by far the most expensive stage, "

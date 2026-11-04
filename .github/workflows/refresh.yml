@@ -1,0 +1,71 @@
+name: Daily refresh
+
+# Brings the public dashboard to the latest US close every weekday:
+#   pull last published state from the Space -> cli refresh -> tests -> push back.
+#
+# The Space is the artifact store. Reports and the news archive are gitignored here, so a
+# fresh runner restores them from the Space first; the expensive walk-forward backtest is
+# never rerun (split boundaries are absolute dates, so new data cannot move its numbers).
+#
+# Setup (once, in the GitHub repo settings):
+#   Secrets   HF_TOKEN              Hugging Face token with write access to the Space
+#   Variables HF_SPACE              e.g. your-name/volatility-radar
+#             SENTIMENT_MODEL_REPO  optional, e.g. your-name/distilbert-financial-tweet-sentiment
+#                                   (without it, news tone uses the lexicon fallback)
+
+on:
+  schedule:
+    - cron: "15 23 * * 1-5"      # 23:15 UTC, after the US close and Yahoo's end-of-day prints
+  workflow_dispatch:
+
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_SPACE: ${{ vars.HF_SPACE }}
+      SENTIMENT_MODEL_REPO: ${{ vars.SENTIMENT_MODEL_REPO }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check configuration
+        run: |
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE" ]; then
+            echo "::error::Set the HF_TOKEN secret and the HF_SPACE variable (see the header of this file)."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install pipeline dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt huggingface_hub==1.23.0
+
+      - name: Install the DistilBERT scorer (CPU)
+        if: ${{ vars.SENTIMENT_MODEL_REPO != '' }}
+        run: |
+          pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers==5.13.1
+
+      - name: Restore published reports and news archive
+        run: python scripts/deploy_space.py pull
+
+      - name: Refresh prices, refit, rebuild the news radar
+        run: python -m volradar.cli refresh
+
+      # The API contract tests read the fresh artifacts, so a broken snapshot fails here
+      # instead of going live.
+      - name: Test against the new artifacts
+        run: pytest -q -p no:randomly
+
+      - name: Publish to the Space
+        run: python scripts/deploy_space.py push
