@@ -46,7 +46,12 @@ export function SectorTable({ sectors, horizon, selected, onSelect, news, foldCo
               <tr
                 key={s.ticker}
                 className={`clickable ${selected === s.ticker ? "on" : ""}`}
-                onClick={() => onSelect(selected === s.ticker ? null : s.ticker)}
+                tabIndex={0}
+                aria-label={`Open ${s.sector}`}
+                onClick={() => onSelect(s.ticker)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(s.ticker); }
+                }}
               >
                 <td className="rank">{s.stability_rank}</td>
                 <td>
@@ -84,7 +89,7 @@ export function SectorTable({ sectors, horizon, selected, onSelect, news, foldCo
         </table>
       </div>
       <p className="sub" style={{ margin: "14px 0 0" }}>
-        Click a sector to load its out-of-sample forecast history below. "Hit rate" is how
+        Select a sector to open its page: forecast history, peers and its own news. "Hit rate" is how
         often the model called that sector's volatility direction correctly across{" "}
         {foldCount ? `${foldCount} ` : "every "}walk-forward year{foldCount === 1 ? "" : "s"} — not a
         claim about today.{hasNews && " \"News\" is the news-channel pressure reading: context, not a model input."}

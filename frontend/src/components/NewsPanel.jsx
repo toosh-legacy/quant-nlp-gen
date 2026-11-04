@@ -3,6 +3,7 @@ import {
   Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { Card } from "./ui";
+import { ArrowRight, Bolt, Close } from "./icons";
 import { AXIS, C, pressureColor, tooltipStyle } from "../theme";
 import { pct, signed } from "../format";
 
@@ -33,7 +34,7 @@ export function PressureBar({ value }) {
   );
 }
 
-function ToneBar({ m }) {
+export function ToneBar({ m }) {
   const tot = Math.max(1, m.bearish + m.neutral + m.bullish);
   return (
     <>
@@ -51,7 +52,7 @@ function ToneBar({ m }) {
   );
 }
 
-function Headline({ h }) {
+export function Headline({ h }) {
   return (
     <div className="feed-item">
       <span className={`tone ${h.label}`} title={`${h.label} · ${(h.confidence * 100).toFixed(0)}% confidence`} />
@@ -64,9 +65,9 @@ function Headline({ h }) {
         <div className="meta">
           <span>{h.channels.join(", ")}</span>
           <span>· {ago(h.published)}</span>
-          {h.sectors.map((s) => <span key={s} className="tag sector">{s}</span>)}
+          {h.sectors.map((s) => <a key={s} className="tag sector" href={`#sectors/${s}`}>{s}</a>)}
           {h.themes.slice(0, 3).map((t) => <span key={t} className="tag">{themeLabel(t)}</span>)}
-          {h.shock > 0 && <span className="tag shock" title="shock-language score">⚡{h.shock}</span>}
+          {h.shock > 0 && <span className="tag shock" title="shock-language score"><Bolt size={11} /> {h.shock}</span>}
         </div>
       </div>
     </div>
@@ -89,7 +90,7 @@ export function NewsPulse({ news, onOpen }) {
     <Card
       title="News pulse"
       sub={`${news.n_headlines} stories · ${news.channels.length} channels · last ${news.window_hours}h`}
-      action={<button className="link-btn" onClick={onOpen}>Open news radar →</button>}
+      action={<button className="link-btn" onClick={onOpen}>Open news radar <ArrowRight size={12} /></button>}
     >
       <div className="pressure-big">
         <span className="n" style={{ color: pressureColor(m.pressure) }}>{m.pressure.toFixed(0)}</span>
@@ -110,7 +111,7 @@ export function NewsPulse({ news, onOpen }) {
 }
 
 /** Full News radar tab. */
-export function NewsRadar({ news, onSelectSector }) {
+export function NewsRadar({ news }) {
   const [sector, setSector] = useState("all");
   const [tone, setTone] = useState("all");
 
@@ -258,7 +259,11 @@ export function NewsRadar({ news, onSelectSector }) {
             ))}
             <span style={{ width: 10 }} />
             <button className={`fbtn ${sector === "all" ? "on" : ""}`} onClick={() => setSector("all")}>All sectors</button>
-            {sector !== "all" && <button className="fbtn on">{sector} ✕</button>}
+            {sector !== "all" && (
+              <button className="fbtn on" onClick={() => setSector("all")} aria-label={`Clear ${sector} filter`}>
+                {sector} <Close size={11} />
+              </button>
+            )}
           </div>
           <div className="feed" style={{ maxHeight: 620, overflowY: "auto", paddingRight: 6 }}>
             {feed.length === 0 && <p className="muted">No headlines match.</p>}
@@ -290,10 +295,10 @@ export function NewsRadar({ news, onSelectSector }) {
               <span className="v">{news.coverage.filter((c) => !c.error).length} / {news.coverage.length}</span></div>
           </Card>
 
-          {onSelectSector && sector !== "all" && (
-            <button className="fbtn on" onClick={() => onSelectSector(sector)}>
-              See {sector}'s volatility forecast history →
-            </button>
+          {sector !== "all" && (
+            <a className="fbtn on link-row" href={`#sectors/${sector}`}>
+              Open the {sector} sector page <ArrowRight size={12} />
+            </a>
           )}
         </div>
       </div>

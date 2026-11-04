@@ -111,3 +111,44 @@ export const REGIME_COPY = {
   normal: "Volatility is forecast in its typical range — neither unusually quiet nor stressed.",
   stressed: "Volatility is forecast in the top fifth of its historical range.",
 };
+
+// Morningstar's three super-sectors: how sensitive each sector's earnings are to the
+// economic cycle. The grouping is the reading frame for the sector board — defensive
+// sectors are normally the calm ones, so a defensive sector forecast as stressed is news.
+export const SUPER_SECTORS = [
+  {
+    id: "defensive",
+    name: "Defensive",
+    blurb: "Demand holds up in any economy. Usually the calmest sectors.",
+    tickers: ["XLP", "XLU", "XLV"],
+  },
+  {
+    id: "cyclical",
+    name: "Cyclical",
+    blurb: "Rises and falls with the economy and with interest rates.",
+    tickers: ["XLY", "XLF", "XLB", "XLRE"],
+  },
+  {
+    id: "sensitive",
+    name: "Sensitive",
+    blurb: "Moderately tied to the cycle; often where volatility starts.",
+    tickers: ["XLK", "XLC", "XLE", "XLI"],
+  },
+];
+
+export const superSectorOf = (ticker) =>
+  SUPER_SECTORS.find((g) => g.tickers.includes(ticker)) || null;
+
+export const SECTOR_BLURB = {
+  XLK: "Software, semiconductors and hardware. The largest weight in the S&P 500.",
+  XLC: "Internet platforms, media and telecom carriers.",
+  XLE: "Oil and gas producers, refiners and services — moves with crude.",
+  XLI: "Aerospace, defence, machinery, airlines and freight.",
+  XLY: "Retail, autos, travel and restaurants — discretionary spending.",
+  XLF: "Banks, insurers, brokers and payment networks.",
+  XLB: "Chemicals, metals, mining and packaging.",
+  XLRE: "REITs: offices, data centres, towers, housing. Rate-sensitive.",
+  XLP: "Food, beverages, household goods and grocers.",
+  XLU: "Electric, gas and water utilities. Bond-like and rate-sensitive.",
+  XLV: "Pharma, biotech, insurers and medical devices.",
+};

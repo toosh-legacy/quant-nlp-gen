@@ -1,14 +1,19 @@
 import React from "react";
 import { Card, Chip } from "./ui";
 import { Gauge } from "./Gauge";
+import { Direction } from "./icons";
 import { featureBlurb, featureLabel, pct, REGIME_COPY, signed } from "../format";
 
-/** The headline: where market volatility is forecast to go over the next h sessions. */
-export function MarketCard({ f, horizon }) {
+/**
+ * The headline: where market volatility is forecast to go over the next h sessions.
+ * The number sits next to its own recent record, so it is never read without context.
+ */
+export function MarketCard({ f, horizon, history }) {
   const rising = f.direction === "rising";
+  const recent = (history?.series || []).slice(-125);
   return (
     <Card
-      className="card feature"
+      className="feature"
       title="Market volatility forecast"
       sub={`S&P 500 (SPY) · next ${horizon} trading days · as of ${f.as_of}`}
     >
@@ -16,7 +21,7 @@ export function MarketCard({ f, horizon }) {
         <span className="big">{f.forecast_vol_ann.toFixed(1)}</span>
         <span className="unit">% annualized</span>
         <span className={`delta ${rising ? "up" : "down"}`}>
-          {rising ? "▲" : "▼"} {signed(f.change_pct)}%
+          <Direction rising={rising} size={13} /> {signed(f.change_pct)}%
         </span>
         <Chip regime={f.regime} />
       </div>
@@ -24,30 +29,42 @@ export function MarketCard({ f, horizon }) {
       <Gauge bands={f.regime_bands_ann} current={f.current_vol_ann} forecast={f.forecast_vol_ann}
              lo={f.forecast_lo_ann} hi={f.forecast_hi_ann} />
 
-      <div className="stat-row">
-        <div className="stat">
-          <div className="k">Now</div>
-          <div className="v">{pct(f.current_vol_ann)}<small>{f.current_regime}</small></div>
-        </div>
-        <div className="stat">
-          <div className="k">80% range</div>
-          <div className="v" style={{ fontSize: 15 }}>
-            {f.forecast_lo_ann != null ? `${f.forecast_lo_ann.toFixed(1)}–${f.forecast_hi_ann.toFixed(1)}%` : "—"}
-          </div>
-        </div>
-        <div className="stat">
-          <div className="k">Band hit rate</div>
-          <div className="v">{f.measured_coverage != null ? `${(f.measured_coverage * 100).toFixed(0)}%` : "—"}
-            <small>out-of-sample</small></div>
-        </div>
-      </div>
+      <div className="kv"><span className="k">Realized now</span>
+        <span className="v">{pct(f.current_vol_ann)} <span className="dim">{f.current_regime}</span></span></div>
+      <div className="kv"><span className="k">Likely range (80%)</span>
+        <span className="v">{f.forecast_lo_ann != null ? `${f.forecast_lo_ann.toFixed(1)} – ${f.forecast_hi_ann.toFixed(1)}%` : "—"}</span></div>
+      <div className="kv"><span className="k">That band's measured hit rate</span>
+        <span className="v">{f.measured_coverage != null ? `${(f.measured_coverage * 100).toFixed(0)}% out-of-sample` : "—"}</span></div>
 
-      <p className="from-line" style={{ marginTop: 14 }}>
+      {recent.length > 1 && <RecentRecord series={recent} />}
+
+      <p className="from-line" style={{ marginTop: 12 }}>
         Volatility is forecast to <strong>{rising ? "rise" : "fall"}</strong> over the next{" "}
-        {horizon} sessions. {REGIME_COPY[f.regime]} White needle is the forecast, the short
-        mark is today, the inner blue arc is the calibrated 80% range.
+        {horizon} sessions. {REGIME_COPY[f.regime]}
       </p>
     </Card>
+  );
+}
+
+/** The last ~6 months of out-of-sample forecasts against outcomes, drawn small. */
+function RecentRecord({ series, width = 520, height = 64 }) {
+  const vals = series.flatMap((d) => [d.forecast, d.realized]).filter((v) => v != null);
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const x = (i) => (i / (series.length - 1)) * width;
+  const y = (v) => height - 4 - ((v - lo) / (hi - lo || 1)) * (height - 8);
+  const path = (k) => series.map((d, i) => `${i ? "L" : "M"}${x(i).toFixed(1)} ${y(d[k]).toFixed(1)}`).join("");
+  return (
+    <figure className="recent">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" width="100%" height={height}
+           role="img" aria-label="Recent out-of-sample forecasts versus realized volatility">
+        <path d={path("realized")} fill="none" stroke="var(--muted)" strokeOpacity=".7" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+        <path d={path("forecast")} fill="none" stroke="var(--accent)" strokeWidth="1.8" vectorEffect="non-scaling-stroke" />
+      </svg>
+      <figcaption className="dim">
+        Last {series.length} sessions out-of-sample: <span style={{ color: "var(--accent)" }}>forecast</span>{" "}
+        vs <span className="muted">realized</span>, {series[0].date} to {series.at(-1).date}
+      </figcaption>
+    </figure>
   );
 }
 

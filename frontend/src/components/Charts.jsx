@@ -28,7 +28,7 @@ export function HistoryChart({ history, title, sub }) {
   return (
     <Card title={title} sub={sub}>
       <ResponsiveContainer width="100%" height={320}>
-        <ComposedChart data={data} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
+        <ComposedChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
           <XAxis dataKey="date" tick={AXIS} tickLine={false} axisLine={{ stroke: GRID }}
                  minTickGap={70} />
@@ -74,7 +74,7 @@ export function EquityChart({ equity }) {
       sub="Growth of $1 · volatility targeting at 15% annualized · 1bp cost per trade · out-of-sample"
     >
       <ResponsiveContainer width="100%" height={320}>
-        <AreaChart data={data} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
+        <AreaChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
           <defs>
             <linearGradient id="gModel" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor={C.accent} stopOpacity={0.32} />

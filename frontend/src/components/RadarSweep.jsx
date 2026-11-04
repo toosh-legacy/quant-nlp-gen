@@ -115,9 +115,14 @@ export function RadarSweep({ sectors, news, selected, onSelect }) {
           return (
             <g key={`b${p.s.ticker}`} transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`}>
               {p.pulse && <circle className="blip-ring" r={p.size} fill="none" stroke={col} />}
-              <g className={`blip ${on ? "on" : ""}`}
+              <g className={`blip ${on ? "on" : ""}`} role="button" tabIndex={0}
+                 aria-label={`${p.s.sector}: forecast ${p.s.forecast_vol_ann.toFixed(1)} percent, ${p.s.regime}`}
                  onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}
-                 onClick={() => onSelect?.(on ? null : p.s.ticker)}>
+                 onFocus={() => setHover(i)} onBlur={() => setHover(null)}
+                 onClick={() => onSelect?.(p.s.ticker)}
+                 onKeyDown={(e) => {
+                   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect?.(p.s.ticker); }
+                 }}>
                 <circle r={p.size + 6} fill="transparent" />
                 <circle r={p.size} fill={col} fillOpacity="0.85" filter="url(#rg-glow)"
                         stroke={on ? "#fff" : "none"} strokeWidth="1.5" />

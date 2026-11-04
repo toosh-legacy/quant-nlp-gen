@@ -6,35 +6,43 @@ import { HistoryChart, EquityChart } from "./components/Charts";
 import { TrackRecord } from "./components/TrackRecord";
 import { RadarSweep, RadarLegend } from "./components/RadarSweep";
 import { NewsPulse, NewsRadar } from "./components/NewsPanel";
+import { SectorBoard, SectorDetail } from "./components/SectorsPage";
+import { ArrowRight } from "./components/icons";
 import { Card, Chip, Logo, State } from "./components/ui";
 import { folds } from "./format";
 import { pressureColor } from "./theme";
 
 const TABS = [
   ["dashboard", "Overview"],
+  ["sectors", "Sectors"],
   ["news", "News radar"],
   ["record", "Track record"],
   ["method", "Method"],
 ];
 
-// The tab lives in the URL hash so a link can open straight onto it.
-const tabFromHash = () => {
-  const h = window.location.hash.replace("#", "");
-  return TABS.some(([id]) => id === h) ? h : "dashboard";
+// Routes live in the URL hash — `#sectors/XLK` — so every view can be linked, bookmarked
+// and reached with the browser's back button, without a router dependency.
+const parseRoute = () => {
+  const [tab, sub] = window.location.hash.replace(/^#/, "").split("/");
+  return {
+    tab: TABS.some(([id]) => id === tab) ? tab : "dashboard",
+    ticker: tab === "sectors" && sub ? sub.toUpperCase() : null,
+  };
 };
 
 export default function App() {
-  const [tab, setTabState] = useState(tabFromHash);
+  const [route, setRoute] = useState(parseRoute);
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
-  const [sectorTicker, setSectorTicker] = useState(null);
-  const [sectorHistory, setSectorHistory] = useState(null);
 
-  const setTab = (t) => {
-    setTabState(t);
-    window.history.replaceState(null, "", `#${t}`);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
+  useEffect(() => {
+    const onHash = () => {
+      setRoute(parseRoute());
+      window.scrollTo({ top: 0 });
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   useEffect(() => {
     // getNews resolves to null when the overlay is absent, so it can never block the page.
@@ -45,10 +53,13 @@ export default function App() {
       .catch((e) => setErr(e.message));
   }, []);
 
+  const { tab, ticker } = route;
   useEffect(() => {
-    if (!sectorTicker) return setSectorHistory(null);
-    getHistory("sector", sectorTicker).then(setSectorHistory).catch(() => setSectorHistory(null));
-  }, [sectorTicker]);
+    if (!data) return;
+    const s = ticker && data.sectors.ranking.find((r) => r.ticker === ticker);
+    document.title = s ? `${s.sector} · Volatility Radar`
+      : `${TABS.find(([id]) => id === tab)?.[1] ?? ""} · Volatility Radar`;
+  }, [data, tab, ticker]);
 
   if (err)
     return (
@@ -64,26 +75,22 @@ export default function App() {
 
   const { forecast, sectors, perf, history, equity, news } = data;
   const horizon = forecast.meta?.horizon ?? 10;
-  const selected = sectors.ranking.find((s) => s.ticker === sectorTicker);
   const foldCount = folds(perf, "sector", horizon)?.n;
   const hasNews = Boolean(news?.available);
-
-  const pickSector = (t) => {
-    setSectorTicker(t);
-    if (t && tab !== "dashboard") setTab("dashboard");
-  };
+  const openSector = (t) => { if (t) window.location.hash = `#sectors/${t}`; };
 
   return (
     <>
+      <a className="skip" href="#main">Skip to content</a>
       <header className="top">
         <div className="top-inner">
-          <div className="brand">
+          <a className="brand" href="#dashboard" aria-label="Volatility Radar — overview">
             <Logo />
             <div>
-              <h1>Volatility <span>Radar</span></h1>
+              <h1>Volatility Radar</h1>
               <p>Market &amp; sector volatility, {horizon} trading days ahead — with its own track record.</p>
             </div>
-          </div>
+          </a>
           <div className="status-strip">
             <span className="pill"><span className="live" />as of <strong>{forecast.as_of}</strong></span>
             <span className="pill">SPY <strong>{forecast.forecast_vol_ann.toFixed(1)}%</strong> <Chip regime={forecast.regime} /></span>
@@ -96,33 +103,35 @@ export default function App() {
             )}
           </div>
         </div>
-        <nav className="tabs">
+        <nav className="tabs" aria-label="Sections">
           {TABS.map(([id, label]) => (
-            <button key={id} className={`tab ${tab === id ? "on" : ""}`} onClick={() => setTab(id)}>
+            <a key={id} href={`#${id}`} className={`tab ${tab === id ? "on" : ""}`}
+               aria-current={tab === id ? "page" : undefined}>
               {label}
               {id === "news" && hasNews && <span className="count">{news.n_headlines}</span>}
-            </button>
+            </a>
           ))}
         </nav>
       </header>
 
-      <div className="wrap">
+      <main className="wrap" id="main">
         {tab === "dashboard" && (
           <>
             <div className="grid hero">
-              <MarketCard f={forecast} horizon={horizon} />
+              <MarketCard f={forecast} horizon={horizon} history={history} />
               <Card
                 title="Sector volatility radar"
-                sub={`Forecast vol per sector · next ${horizon} days · hover a blip, click to drill in`}
+                sub={`Forecast vol per sector · next ${horizon} days · select a sector to open it`}
+                action={<a className="link-btn" href="#sectors">All sectors <ArrowRight size={12} /></a>}
               >
-                <RadarSweep sectors={sectors} news={news} selected={sectorTicker} onSelect={pickSector} />
+                <RadarSweep sectors={sectors} news={news} selected={null} onSelect={openSector} />
                 <RadarLegend hasNews={hasNews} />
               </Card>
             </div>
 
             <div className="grid two" style={{ marginTop: 18 }}>
               <DriversCard drivers={forecast.drivers} />
-              <NewsPulse news={news} onOpen={() => setTab("news")} />
+              <NewsPulse news={news} onOpen={() => { window.location.hash = "#news"; }} />
             </div>
 
             <h3 className="section-title">Which sectors are stable?</h3>
@@ -134,8 +143,8 @@ export default function App() {
             <SectorTable
               sectors={sectors}
               horizon={horizon}
-              selected={sectorTicker}
-              onSelect={setSectorTicker}
+              selected={null}
+              onSelect={openSector}
               news={news}
               foldCount={foldCount}
             />
@@ -145,19 +154,17 @@ export default function App() {
               Out-of-sample only. Each point was produced by a model that had seen nothing
               after the previous year end, so this is the record a user would really have got.
             </p>
-            <HistoryChart
-              history={sectorHistory && selected ? sectorHistory : history}
-              title={sectorHistory && selected ? `${selected.sector} — forecast vs realized` : "Market — forecast vs realized"}
-              sub={
-                sectorHistory && selected
-                  ? `${selected.ticker} · click the row or blip again to return to the market view`
-                  : "SPY · select a sector above to drill in"
-              }
-            />
+            <HistoryChart history={history} title="Market — forecast vs realized"
+                          sub="SPY · each sector's own record is on its page under Sectors" />
           </>
         )}
 
-        {tab === "news" && <NewsRadar news={news} onSelectSector={pickSector} />}
+        {tab === "sectors" && !ticker && <SectorBoard sectors={sectors} news={news} horizon={horizon} />}
+        {tab === "sectors" && ticker && (
+          <SectorDetail sectors={sectors} news={news} horizon={horizon} ticker={ticker} />
+        )}
+
+        {tab === "news" && <NewsRadar news={news} />}
 
         {tab === "record" && <TrackRecord perf={perf} />}
 
@@ -176,7 +183,7 @@ export default function App() {
           {forecast.meta?.fitted_utc?.slice(0, 10)}
           {hasNews && <> · news read {news.generated_utc.slice(0, 16).replace("T", " ")} UTC</>}.
         </footer>
-      </div>
+      </main>
     </>
   );
 }

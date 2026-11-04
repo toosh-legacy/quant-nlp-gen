@@ -41,7 +41,7 @@ export function Logo({ size = 34 }) {
       <circle cx="17" cy="17" r="15" fill="none" stroke="#5eb1ff" strokeOpacity=".55" />
       <circle cx="17" cy="17" r="9.5" fill="none" stroke="#5eb1ff" strokeOpacity=".3" />
       <circle cx="17" cy="17" r="4" fill="none" stroke="#5eb1ff" strokeOpacity=".25" />
-      <g className="sweep">
+      <g className="logo-sweep">
         <path d="M17 17 L32 17 A15 15 0 0 0 28.5 7.4 Z" fill="url(#lg-sweep)" />
         <line x1="17" y1="17" x2="32" y2="17" stroke="#8b7cff" strokeWidth="1.6" strokeLinecap="round" />
       </g>
