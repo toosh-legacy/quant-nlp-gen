@@ -1,8 +1,8 @@
 # Optional extras for volradar/sentiment/ — the DistilBERT headline classifier.
 #
-# The forecaster does not need these. Sentiment is a recency-limited overlay (free news
-# headlines only cover roughly the last one to two years), so it is evaluated separately
-# rather than being a core model input.
+# The forecaster does not need these. They power the news-tone scorer in volradar/news/
+# (which falls back to a word list without them) and the fine-tuning script. News tone is a
+# descriptive overlay: free feeds carry days of history, so it is not a model input.
 #
 # Install torch from the CPU wheel index FIRST:
 #   pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu

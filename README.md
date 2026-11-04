@@ -5,9 +5,10 @@ next 5–10 trading days, and ships the track record that qualifies every number
 
 ```bash
 pip install -r requirements.txt
-python -m volradar.cli all        # fetch, build, backtest, train
+python -m volradar.cli all        # fetch, build, backtest, train, news
 cd frontend && npm install && npm run build
 python -m volradar.cli serve      # dashboard at http://127.0.0.1:8000
+python -m volradar.cli refresh    # daily: latest close -> retrain -> news radar
 ```
 
 ---
@@ -161,9 +162,16 @@ volradar/
     intraday_study.py    is intraday data worth paying for?
     benchmark.py         vs the literature, on the literature's own data
   simulate/              synthetic markets with a KNOWN true volatility; ceiling + leakage tests
+  news/
+    sources.py           24 free RSS feeds from news channels, fetched in parallel, de-duplicated
+    semantics.py         sector / risk-theme / shock-language tagging (inspectable word lists)
+    scoring.py           tone from the fine-tuned DistilBERT, lexicon fallback
+    radar.py             market + per-sector news reading, archive, validation status
+  sentiment/             DistilBERT fine-tuning + Hugging Face publish scripts
   api/server.py          FastAPI — reads artifacts, computes nothing
-frontend/                React + Vite dashboard
-tests/                   89 tests: causality, embargo, metrics, conformal, panels, fetch, API
+frontend/                React + Vite dashboard (radar, gauge, news panel, track record)
+scripts/ui_check.py      Playwright end-to-end check of the running dashboard
+tests/                   108 tests: causality, embargo, metrics, conformal, panels, fetch, API, news
 ```
 
 ### 4.2 Data flow
@@ -305,6 +313,8 @@ of the report files cited here.
 | `intraday` | is intraday data worth paying for? |
 | `benchmark` | vs the literature, on the literature's own data |
 | `train` | production fit + dashboard snapshot |
+| `news` | score news-channel headlines onto the radar (network); `--lexicon` skips DistilBERT |
+| `refresh` | `fetch` + `build` + `train` + `news`, all forced — the daily update |
 | `serve` | API + dashboard |
 
 Useful flags: `--force` rebuilds a stage from scratch; `--market-only` skips the sector panel
@@ -313,14 +323,14 @@ in `ablation`, which is by far the most expensive stage.
 To refresh the dashboard to the latest close without re-running the backtest:
 
 ```bash
-python -m volradar.cli fetch --force && python -m volradar.cli build --force \
-  && python -m volradar.cli train
+python -m volradar.cli refresh     # fetch + build + train + news, ~1 minute
 ```
 
 ### Tests
 
 ```bash
-pytest -q                          # 89 tests, ~10 seconds
+pytest -q                          # 108 tests, ~10 seconds
+python scripts/ui_check.py         # Playwright, against a running `serve`
 ```
 
 Covering causality (including candidate feature blocks, not only shipped ones), the embargo,
@@ -611,12 +621,21 @@ restoring coverage to **78%**.
 
 ## Also here
 
-`volradar/sentiment/` holds a DistilBERT financial-sentiment classifier (88% accuracy, 0.85
-macro-F1) from an earlier phase. It is **not** a model input and is **parked, not pending**:
-free headline sources provide days of history, not years, so news tone cannot be walk-forward
-validated over a 2012–2026 window, and back-filling from today's articles would leak the
-future into the past. The blocker is data, not code — `score_headlines` in `headlines.py` is
-the seam where a timestamped archive would slot in.
+**News semantics overlay** (`volradar/news/`, the *News radar* tab). Headlines from 24 free
+RSS feeds — CNBC, MarketWatch, the FT, BBC, Nasdaq, Seeking Alpha, Investing.com, the Federal
+Reserve, Google News and per-sector Yahoo Finance — are de-duplicated across channels, scored
+Bearish / Bullish / Neutral by the DistilBERT classifier in `volradar/sentiment/` (88%
+accuracy, 0.85 macro-F1), and tagged with sectors, risk themes and shock language. They are
+aggregated into a recency- and breadth-weighted 0–100 *news pressure* per sector, shown beside
+the forecast with a flag where the two rank a sector very differently.
+
+It is **not a model input**, for the same reason as before: free feeds carry days of history,
+not years, so news tone cannot be walk-forward validated over 2012–2026, and back-filling from
+today's articles would leak the future. What changed is that the blocker is now being worked
+off: every run appends each story, with its score frozen at first sight, to
+`data/news/headlines.parquet`. `validation_status()` reports progress, and once the archive
+spans `NEWS_MIN_DAYS_FOR_TEST` days it runs a first screen against the out-of-sample forecast
+error. Adoption would still go through `metrics.paired_test` like every other family.
 
 The prior research phase — stock *direction* prediction (near-random, MCC ≤ 0.09) and a
 single-stock Tesla deep dive — is preserved at tag `v1-research-archive`.

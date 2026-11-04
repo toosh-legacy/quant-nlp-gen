@@ -59,7 +59,12 @@ fetch ──> data/raw/*.parquet
         └──────────────┴────────────────────────┘
                        │
                     api/server ──> frontend
+                       ▲
+   RSS feeds ──> news/ (tag, score) ──> news_radar.json + data/news/ archive
 ```
+
+The news branch reads `snapshot.json` (to compare news and forecast ranks) but never writes
+to anything the forecast reads — it is an overlay by construction, not by convention.
 
 Every stage caches to disk and is idempotent. Re-running a later stage never re-downloads.
 `--force` rebuilds a stage from scratch.
