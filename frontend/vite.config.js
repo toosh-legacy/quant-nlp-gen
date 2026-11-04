@@ -3,8 +3,10 @@ import react from "@vitejs/plugin-react";
 
 // The dashboard is served by FastAPI in production (same origin, so /api works directly).
 // In dev, Vite proxies /api to the Python server so the frontend never needs to know
-// which mode it is running in.
+// which mode it is running in. VITE_STATIC=1 builds the serverless variant for GitHub Pages:
+// relative asset paths (the site lives under /<repo>/) and JSON files instead of /api.
 export default defineConfig({
+  base: process.env.VITE_STATIC === "1" ? "./" : "/",
   plugins: [react()],
   server: {
     port: 5173,
