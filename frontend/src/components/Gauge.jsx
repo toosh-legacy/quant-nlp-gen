@@ -26,7 +26,7 @@ export function Gauge({ bands, current, forecast, lo, hi }) {
 
   return (
     <div className="gauge-wrap">
-      <svg className="gauge" viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: 360 }}
+      <svg className="gauge" viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: 420 }}
            role="img" aria-label={`Forecast ${forecast.toFixed(1)} percent`}>
         <path d={arc(0, 1)} stroke={C.panel2} strokeWidth={T} fill="none" strokeLinecap="round" />
         <path d={arc(0, f(bands.calm_max))} stroke={C.calm} strokeOpacity=".75" strokeWidth={T} fill="none" />

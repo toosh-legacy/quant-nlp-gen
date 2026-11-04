@@ -7,6 +7,7 @@ import { TrackRecord } from "./components/TrackRecord";
 import { RadarSweep, RadarLegend } from "./components/RadarSweep";
 import { NewsPulse, NewsRadar } from "./components/NewsPanel";
 import { SectorBoard, SectorDetail } from "./components/SectorsPage";
+import { KpiStrip, NewsVolMap, SectorOutlook, SuperSectors } from "./components/Overview";
 import { ArrowRight } from "./components/icons";
 import { Card, Chip, Logo, State } from "./components/ui";
 import { folds } from "./format";
@@ -117,6 +118,7 @@ export default function App() {
       <main className="wrap" id="main">
         {tab === "dashboard" && (
           <>
+            <KpiStrip forecast={forecast} sectors={sectors} news={news} />
             <div className="grid hero">
               <MarketCard f={forecast} horizon={horizon} history={history} />
               <Card
@@ -127,6 +129,15 @@ export default function App() {
                 <RadarSweep sectors={sectors} news={news} selected={null} onSelect={openSector} />
                 <RadarLegend hasNews={hasNews} />
               </Card>
+            </div>
+
+            <div style={{ marginTop: 18 }}>
+              <SectorOutlook sectors={sectors} horizon={horizon} />
+            </div>
+
+            <div className={`grid ${hasNews ? "two" : ""}`} style={{ marginTop: 18 }}>
+              <SuperSectors sectors={sectors} />
+              {hasNews && <NewsVolMap sectors={sectors} news={news} />}
             </div>
 
             <div className="grid two" style={{ marginTop: 18 }}>
