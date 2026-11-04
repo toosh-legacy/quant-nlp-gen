@@ -7,7 +7,7 @@ name: Daily refresh
 # fresh runner restores them from the Space first; the expensive walk-forward backtest is
 # never rerun (split boundaries are absolute dates, so new data cannot move its numbers).
 #
-# Setup (once, in the GitHub repo settings):
+# Setup (once, in the GitHub repo settings, under the "quant-nlp-gen" environment):
 #   Secrets   HF_TOKEN              Hugging Face token with write access to the Space
 #   Variables HF_SPACE              e.g. your-name/volatility-radar
 #             SENTIMENT_MODEL_REPO  optional, e.g. your-name/distilbert-financial-tweet-sentiment
@@ -25,6 +25,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    environment: quant-nlp-gen     # HF_TOKEN / HF_SPACE / SENTIMENT_MODEL_REPO live here
     timeout-minutes: 60
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
