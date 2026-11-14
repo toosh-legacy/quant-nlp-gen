@@ -1,0 +1,210 @@
+{
+  "horizon": 10,
+  "generated_utc": "2026-11-14T03:22:43+00:00",
+  "market": {
+    "as_of": "2026-11-13",
+    "current_vol_ann": 27.64,
+    "forecast_vol_ann": 14.35,
+    "change_pct": -48.1,
+    "direction": "falling",
+    "regime": "normal",
+    "current_regime": "stressed",
+    "regime_bands_ann": {
+      "calm_max": 9.73,
+      "normal_max": 19.94
+    },
+    "forecast_lo_ann": 9.53,
+    "forecast_hi_ann": 21.6,
+    "nominal_coverage": 0.8,
+    "measured_coverage": 0.7796,
+    "drivers": [
+      {
+        "feature": "log_gk_w",
+        "contribution_vol_pts": 1.1244672072582826
+      },
+      {
+        "feature": "ret_5",
+        "contribution_vol_pts": -1.038693398540481
+      },
+      {
+        "feature": "drawdown_63",
+        "contribution_vol_pts": 0.7180622837656276
+      },
+      {
+        "feature": "log_gk_d",
+        "contribution_vol_pts": 0.6796250355990949
+      },
+      {
+        "feature": "log_rv_q",
+        "contribution_vol_pts": 0.58990329948276
+      },
+      {
+        "feature": "rv_slope_mq",
+        "contribution_vol_pts": -0.379189794616984
+      },
+      {
+        "feature": "log_gk_m",
+        "contribution_vol_pts": -0.33366335997385477
+      },
+      {
+        "feature": "log_pk_d",
+        "contribution_vol_pts": 0.14390453863144792
+      }
+    ],
+    "meta": {
+      "panel": "market",
+      "horizon": 10,
+      "model": "gbm",
+      "params": {
+        "n_estimators": 300,
+        "max_depth": 2,
+        "learning_rate": 0.03
+      },
+      "training_source": "own",
+      "n_train": 5429,
+      "n_features": 15,
+      "train_start": "2005-04-05",
+      "train_end": "2026-10-30",
+      "regime_thresholds": {
+        "calm_max": -5.094634375149166,
+        "normal_max": -4.377291489459196
+      },
+      "fitted_utc": "2026-11-14T03:22:45+00:00"
+    }
+  },
+  "sectors": {
+    "as_of": "2026-11-13",
+    "ranking": [
+      {
+        "ticker": "XLRE",
+        "sector": "Real Estate",
+        "current_vol_ann": 21.52,
+        "forecast_vol_ann": 12.41,
+        "change_pct": -42.4,
+        "direction": "falling",
+        "regime": "normal",
+        "stability_rank": 1
+      },
+      {
+        "ticker": "XLF",
+        "sector": "Financials",
+        "current_vol_ann": 26.89,
+        "forecast_vol_ann": 12.48,
+        "change_pct": -53.6,
+        "direction": "falling",
+        "regime": "normal",
+        "stability_rank": 2
+      },
+      {
+        "ticker": "XLP",
+        "sector": "Cons. Staples",
+        "current_vol_ann": 24.34,
+        "forecast_vol_ann": 13.07,
+        "change_pct": -46.3,
+        "direction": "falling",
+        "regime": "normal",
+        "stability_rank": 3
+      },
+      {
+        "ticker": "XLU",
+        "sector": "Utilities",
+        "current_vol_ann": 10.24,
+        "forecast_vol_ann": 13.1,
+        "change_pct": 27.9,
+        "direction": "rising",
+        "regime": "normal",
+        "stability_rank": 4
+      },
+      {
+        "ticker": "XLB",
+        "sector": "Materials",
+        "current_vol_ann": 26.48,
+        "forecast_vol_ann": 15.81,
+        "change_pct": -40.3,
+        "direction": "falling",
+        "regime": "normal",
+        "stability_rank": 5
+      },
+      {
+        "ticker": "XLV",
+        "sector": "Health Care",
+        "current_vol_ann": 22.55,
+        "forecast_vol_ann": 15.89,
+        "change_pct": -29.5,
+        "direction": "falling",
+        "regime": "normal",
+        "stability_rank": 6
+      },
+      {
+        "ticker": "XLY",
+        "sector": "Cons. Discretionary",
+        "current_vol_ann": 34.79,
+        "forecast_vol_ann": 16.09,
+        "change_pct": -53.8,
+        "direction": "falling",
+        "regime": "normal",
+        "stability_rank": 7
+      },
+      {
+        "ticker": "XLI",
+        "sector": "Industrials",
+        "current_vol_ann": 31.09,
+        "forecast_vol_ann": 17.03,
+        "change_pct": -45.2,
+        "direction": "falling",
+        "regime": "normal",
+        "stability_rank": 8
+      },
+      {
+        "ticker": "XLC",
+        "sector": "Comm. Services",
+        "current_vol_ann": 24.01,
+        "forecast_vol_ann": 17.05,
+        "change_pct": -29.0,
+        "direction": "falling",
+        "regime": "normal",
+        "stability_rank": 9
+      },
+      {
+        "ticker": "XLE",
+        "sector": "Energy",
+        "current_vol_ann": 37.19,
+        "forecast_vol_ann": 21.93,
+        "change_pct": -41.0,
+        "direction": "falling",
+        "regime": "normal",
+        "stability_rank": 10
+      },
+      {
+        "ticker": "XLK",
+        "sector": "Technology",
+        "current_vol_ann": 51.76,
+        "forecast_vol_ann": 28.21,
+        "change_pct": -45.5,
+        "direction": "falling",
+        "regime": "stressed",
+        "stability_rank": 11
+      }
+    ],
+    "meta": {
+      "panel": "sector",
+      "horizon": 10,
+      "model": "gbm",
+      "params": {
+        "n_estimators": 600,
+        "max_depth": 2,
+        "learning_rate": 0.05
+      },
+      "training_source": "pooled",
+      "n_train": 477139,
+      "n_features": 17,
+      "train_start": "2005-04-05",
+      "train_end": "2026-10-30",
+      "regime_thresholds": {
+        "calm_max": -4.874755747106784,
+        "normal_max": -4.220287466123877
+      },
+      "fitted_utc": "2026-11-14T03:23:01+00:00"
+    }
+  }
+}

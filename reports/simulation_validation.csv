@@ -1,0 +1,6 @@
+experiment,perfect_r2_vs_proxy,perfect_skill_vs_persistence,persistence_r2,n,r2_vs_proxy,r2_vs_truth,skill_vs_proxy,skill_vs_truth,n_folds,corr_forecast_vs_true,corr_proxy_vs_true,corr_persistence_vs_true,n_test,skill_mean,skill_std,r2_mean,r2_max
+ceiling,0.887422102780692,0.7224079027243696,0.5944484791743705,4980.0,,,,,,,,,,,,,
+model_vs_truth,,,,,0.45533153403292476,0.5930315707479273,0.292382221656288,0.46611481249047926,15.0,,,,,,,,
+recovery,,,,,,,,,,0.9131102270766337,0.951574763037906,0.8729337552089038,1971.0,,,,
+null_no_predictability,,,,,,,,,15.0,,,,,0.43208011851345207,0.07980690209726238,-0.1874332475779296,
+shuffled_target,,,,,,,,,15.0,,,,,,,-1.3155168116890752,-0.20070714566287262

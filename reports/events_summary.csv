@@ -1,0 +1,2 @@
+panel,horizon,oos_start,oos_end,n_episodes,n_detected,detection_rate,median_lead_days,alarm_days,alarm_share_of_days,false_alarm_rate
+market,10,2012-01-03,2026-07-28,15,4,0.26666666666666666,42.0,359,0.09803386127799017,0.3119777158774373
