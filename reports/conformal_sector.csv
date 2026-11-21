@@ -1,0 +1,2 @@
+panel,nominal_coverage,static_realized_coverage,static_mean_width_vol_pts,static_median_width_vol_pts,static_n,adaptive_realized_coverage,adaptive_mean_width_vol_pts,adaptive_median_width_vol_pts,adaptive_n
+sector,0.8,0.8000692262633793,14.466203129504368,12.53552028244166,37558,0.7845953710228196,14.650139705665746,11.525303026582755,36898

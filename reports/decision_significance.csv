@@ -1,0 +1,2 @@
+sharpe_gap,ci_low,ci_high,p_gap_positive,significant,n_boot,block_days
+0.04571247009322099,-0.06656263287079969,0.15613872521938713,0.784,False,2000,21
